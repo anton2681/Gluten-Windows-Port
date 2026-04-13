@@ -20,6 +20,54 @@
 
 #include <limits>
 
+#ifdef _WIN32
+#include <malloc.h>
+// On Windows, use _aligned_malloc/_aligned_free for ALL allocations (aligned and non-aligned).
+// This ensures all memory freed via gluten_std_free or gluten_aligned_free is consistent.
+// _aligned_malloc with alignment=1 is effectively the same as malloc but must be freed with _aligned_free.
+static inline void* gluten_std_alloc(size_t size) {
+  return _aligned_malloc(size, 1);
+}
+static inline void* gluten_std_calloc(size_t nmemb, size_t size) {
+  void* p = _aligned_malloc(nmemb * size, 1);
+  if (p) {
+    memset(p, 0, nmemb * size);
+  }
+  return p;
+}
+static inline void* gluten_std_realloc(void* p, size_t newSize) {
+  return _aligned_realloc(p, newSize, 1);
+}
+static inline void gluten_std_free(void* p) {
+  _aligned_free(p);
+}
+static inline void* gluten_aligned_alloc(size_t alignment, size_t size) {
+  return _aligned_malloc(size, alignment);
+}
+static inline void gluten_aligned_free(void* p) {
+  _aligned_free(p);
+}
+#else
+static inline void* gluten_std_alloc(size_t size) {
+  return std::malloc(size);
+}
+static inline void* gluten_std_calloc(size_t nmemb, size_t size) {
+  return std::calloc(nmemb, size);
+}
+static inline void* gluten_std_realloc(void* p, size_t newSize) {
+  return std::realloc(p, newSize);
+}
+static inline void gluten_std_free(void* p) {
+  std::free(p);
+}
+static inline void* gluten_aligned_alloc(size_t alignment, size_t size) {
+  return std::aligned_alloc(alignment, size);
+}
+static inline void gluten_aligned_free(void* p) {
+  std::free(p);
+}
+#endif
+
 namespace gluten {
 
 bool ListenableMemoryAllocator::allocate(int64_t size, void** out) {
@@ -124,7 +172,7 @@ void ListenableMemoryAllocator::updateUsage(int64_t size) {
 
 bool StdMemoryAllocator::allocate(int64_t size, void** out) {
   GLUTEN_CHECK(size >= 0, "size is less than 0");
-  *out = std::malloc(size);
+  *out = gluten_std_alloc(size);
   if (*out == nullptr) {
     return false;
   }
@@ -138,7 +186,7 @@ bool StdMemoryAllocator::allocateZeroFilled(int64_t nmemb, int64_t size, void** 
   GLUTEN_CHECK(
       size == 0 || nmemb <= std::numeric_limits<int64_t>::max() / size,
       "nmemb * size overflows int64_t");
-  *out = std::calloc(nmemb, size);
+  *out = gluten_std_calloc(nmemb, size);
   if (*out == nullptr) {
     return false;
   }
@@ -148,7 +196,7 @@ bool StdMemoryAllocator::allocateZeroFilled(int64_t nmemb, int64_t size, void** 
 
 bool StdMemoryAllocator::allocateAligned(uint64_t alignment, int64_t size, void** out) {
   GLUTEN_CHECK(size >= 0, "size is less than 0");
-  *out = aligned_alloc(alignment, size);
+  *out = gluten_aligned_alloc(alignment, size);
   if (*out == nullptr) {
     return false;
   }
@@ -157,7 +205,7 @@ bool StdMemoryAllocator::allocateAligned(uint64_t alignment, int64_t size, void*
 }
 
 bool StdMemoryAllocator::reallocate(void* p, int64_t size, int64_t newSize, void** out) {
-  *out = std::realloc(p, newSize);
+  *out = gluten_std_realloc(p, newSize);
   if (*out == nullptr) {
     return false;
   }
@@ -173,16 +221,24 @@ bool StdMemoryAllocator::reallocateAligned(void* p, uint64_t alignment, int64_t 
   if (newSize <= size) {
     auto aligned = ROUND_TO_LINE(static_cast<uint64_t>(newSize), alignment);
     if (aligned <= size) {
-      // shrink-to-fit
-      return reallocate(p, size, aligned, out);
+      // shrink-to-fit: must use aligned alloc/free (_aligned_malloc is not compatible with realloc)
+      void* reallocatedP = gluten_aligned_alloc(alignment, aligned);
+      if (reallocatedP == nullptr) {
+        return false;
+      }
+      memcpy(reallocatedP, p, aligned);
+      gluten_aligned_free(p);
+      *out = reallocatedP;
+      bytes_ += (static_cast<int64_t>(aligned) - size);
+      return true;
     }
   }
-  void* reallocatedP = std::aligned_alloc(alignment, newSize);
+  void* reallocatedP = gluten_aligned_alloc(alignment, newSize);
   if (reallocatedP == nullptr) {
     return false;
   }
   memcpy(reallocatedP, p, std::min(size, newSize));
-  std::free(p);
+  gluten_aligned_free(p);
   *out = reallocatedP;
   bytes_ += (newSize - size);
   return true;
@@ -190,7 +246,7 @@ bool StdMemoryAllocator::reallocateAligned(void* p, uint64_t alignment, int64_t 
 
 bool StdMemoryAllocator::free(void* p, int64_t size) {
   GLUTEN_CHECK(p != nullptr, "free with nullptr");
-  std::free(p);
+  gluten_std_free(p);
   bytes_ -= size;
   return true;
 }

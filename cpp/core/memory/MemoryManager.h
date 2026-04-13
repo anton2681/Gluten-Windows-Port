@@ -21,15 +21,35 @@
 #include "memory.pb.h"
 #include "memory/AllocationListener.h"
 
+// On Windows, symbols in a DLL must be explicitly exported so that other DLLs
+// can import them via the import library (.lib) rather than linking the static
+// companion library.  Without this, each DLL that links gluten gets its own
+// private copy of the function-local-static registries, which breaks the
+// plugin registration pattern where velox.dll registers factories that
+// gluten.dll later looks up.
+//
+// CMake automatically defines gluten_EXPORTS when compiling sources that
+// belong to the 'gluten' SHARED library target, so we use that to distinguish
+// "building the DLL" (export) from "consuming the DLL" (import).
+#ifdef _WIN32
+#ifdef gluten_EXPORTS
+#define GLUTEN_EXPORT __declspec(dllexport)
+#else
+#define GLUTEN_EXPORT __declspec(dllimport)
+#endif
+#else
+#define GLUTEN_EXPORT
+#endif
+
 namespace gluten {
 
 class MemoryManager {
  public:
   using Factory = std::function<MemoryManager*(const std::string& kind, std::unique_ptr<AllocationListener> listener)>;
   using Releaser = std::function<void(MemoryManager*)>;
-  static void registerFactory(const std::string& kind, Factory factory, Releaser releaser);
-  static MemoryManager* create(const std::string& kind, std::unique_ptr<AllocationListener> listener);
-  static void release(MemoryManager*);
+  GLUTEN_EXPORT static void registerFactory(const std::string& kind, Factory factory, Releaser releaser);
+  GLUTEN_EXPORT static MemoryManager* create(const std::string& kind, std::unique_ptr<AllocationListener> listener);
+  GLUTEN_EXPORT static void release(MemoryManager*);
 
   MemoryManager(const std::string& kind) : kind_(kind){};
 

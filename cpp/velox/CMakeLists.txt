@@ -35,7 +35,9 @@ set(SYSTEM_LOCAL_LIB_PATH
 set(SYSTEM_LOCAL_LIB64_PATH
     "/usr/local/lib64"
     CACHE PATH "System Local Lib64 dir")
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
+if(WIN32)
+  set(SYSTEM_LIB_MULTIARCH_PATH "" CACHE PATH "System Lib MultiArch dir")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86)|(X86)|(amd64)|(AMD64)")
   set(SYSTEM_LIB_MULTIARCH_PATH
       "/usr/lib/x86_64-linux-gnu"
       CACHE PATH "System Lib MultiArch dir")
@@ -240,13 +242,15 @@ endif()
 find_protobuf()
 message(STATUS "Found Protobuf: ${PROTOBUF_LIBRARY}")
 
-add_custom_command(
-  OUTPUT ${VELOX_PROTO_OUTPUT_FILES}
-  COMMAND ${PROTOC_BIN} --proto_path ${VELOX_PROTO_SRC_DIR}/ --cpp_out
-          ${PROTO_OUTPUT_DIR} ${VELOX_PROTO_FILES}
-  DEPENDS ${VELOX_PROTO_DIR}
-  COMMENT "Running Gluten Velox PROTO compiler"
-  VERBATIM)
+if(VELOX_PROTO_OUTPUT_FILES)
+  add_custom_command(
+    OUTPUT ${VELOX_PROTO_OUTPUT_FILES}
+    COMMAND ${PROTOC_BIN} --proto_path ${VELOX_PROTO_SRC_DIR}/ --cpp_out
+            ${PROTO_OUTPUT_DIR} ${VELOX_PROTO_FILES}
+    DEPENDS ${VELOX_PROTO_DIR}
+    COMMENT "Running Gluten Velox PROTO compiler"
+    VERBATIM)
+endif()
 
 add_custom_target(velox_jni_proto ALL DEPENDS ${SUBSTRAIT_PROTO_OUTPUT_FILES}
                                               ${VELOX_PROTO_OUTPUT_FILES})
@@ -286,7 +290,17 @@ endif()
 target_link_libraries(velox PUBLIC gluten)
 
 # Requires VELOX_MONO_LIBRARY=ON when building Velox.
-import_library(facebook::velox ${VELOX_BUILD_PATH}/lib/libvelox.a)
+if(WIN32)
+  # On Windows, velox is split into multiple lib files
+  foreach(_part 0 1 2 3)
+    import_library(facebook::velox::part${_part} ${VELOX_BUILD_PATH}/lib/velox_part${_part}.lib)
+  endforeach()
+  add_library(facebook::velox INTERFACE IMPORTED)
+  set_target_properties(facebook::velox PROPERTIES
+    INTERFACE_LINK_LIBRARIES "facebook::velox::part0;facebook::velox::part1;facebook::velox::part2;facebook::velox::part3")
+else()
+  import_library(facebook::velox ${VELOX_BUILD_PATH}/lib/libvelox.a)
+endif()
 
 if(BUILD_TESTS)
   add_duckdb()
@@ -324,27 +338,47 @@ find_re2()
 target_link_libraries(velox PUBLIC ${RE2_LIBRARY})
 
 set(CMAKE_FIND_LIBRARY_SUFFIXES_BCK ${CMAKE_FIND_LIBRARY_SUFFIXES})
-set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+if(WIN32)
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ".lib")
+else()
+  set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+endif()
 
-find_library(STEMMER_LIB NAMES libstemmer.a)
+if(WIN32)
+  find_library(STEMMER_LIB NAMES stemmer libstemmer)
+else()
+  find_library(STEMMER_LIB NAMES libstemmer.a)
+endif()
 if(STEMMER_LIB)
   message(STATUS "Found stemmer: ${STEMMER_LIB}")
   add_library(external::stemmer STATIC IMPORTED)
   set_target_properties(external::stemmer PROPERTIES IMPORTED_LOCATION
                                                      ${STEMMER_LIB})
 else()
-  import_library(
-    external::stemmer
-    ${VELOX_BUILD_PATH}/_deps/libstemmer/src/libstemmer/libstemmer.a)
+  if(WIN32)
+    import_library(
+      external::stemmer
+      ${VELOX_BUILD_PATH}/_deps/libstemmer-build/stemmer.lib)
+  else()
+    import_library(
+      external::stemmer
+      ${VELOX_BUILD_PATH}/_deps/libstemmer/src/libstemmer/libstemmer.a)
+  endif()
 endif()
 target_link_libraries(velox PUBLIC external::stemmer)
 
 find_package(geos)
-if(geos_FOUND AND TARGET GEOS::geos)
+if(geos_FOUND AND TARGET GEOS::geos_c)
+  add_library(external::geos ALIAS GEOS::geos_c)
+elseif(geos_FOUND AND TARGET GEOS::geos)
   add_library(external::geos ALIAS GEOS::geos)
 else()
   message(STATUS "import Velox bundled geos")
-  import_library(external::geos ${VELOX_BUILD_PATH}/lib/libgeos.a)
+  if(WIN32)
+    import_library(external::geos ${VELOX_BUILD_PATH}/lib/geos.lib)
+  else()
+    import_library(external::geos ${VELOX_BUILD_PATH}/lib/libgeos.a)
+  endif()
 endif()
 target_link_libraries(velox PUBLIC external::geos)
 
@@ -352,8 +386,13 @@ find_package(simdjson CONFIG)
 if(simdjson_FOUND AND TARGET simdjson::simdjson)
   target_link_libraries(velox PUBLIC simdjson::simdjson)
 else()
-  import_library(external::simdjson
-                 ${VELOX_BUILD_PATH}/_deps/simdjson-build/libsimdjson.a)
+  if(WIN32)
+    import_library(external::simdjson
+                   ${VELOX_BUILD_PATH}/_deps/simdjson-build/simdjson.lib)
+  else()
+    import_library(external::simdjson
+                   ${VELOX_BUILD_PATH}/_deps/simdjson-build/libsimdjson.a)
+  endif()
   target_link_libraries(velox PUBLIC external::simdjson)
 endif()
 
@@ -451,13 +490,15 @@ if(ENABLE_GPU)
            facebook::velox::velox_cudf_expression cudf::cudf velox_curl)
 endif()
 
-add_custom_command(
-  TARGET velox
-  POST_BUILD
-  COMMAND ld $<TARGET_FILE:velox> || true
-  COMMENT "Checking ld result of libvelox.so")
-add_custom_command(
-  TARGET velox
-  POST_BUILD
-  COMMAND ldd $<TARGET_FILE:velox> || true
-  COMMENT "Checking ldd result of libvelox.so")
+if(NOT WIN32)
+  add_custom_command(
+    TARGET velox
+    POST_BUILD
+    COMMAND ld $<TARGET_FILE:velox> || true
+    COMMENT "Checking ld result of libvelox.so")
+  add_custom_command(
+    TARGET velox
+    POST_BUILD
+    COMMAND ldd $<TARGET_FILE:velox> || true
+    COMMENT "Checking ldd result of libvelox.so")
+endif()

@@ -15,10 +15,16 @@
 # specific language governing permissions and limitations
 # under the License.
 
-set(ARROW_STATIC_LIBRARY_SUFFIX ".a")
-
-set(ARROW_LIB_NAME "arrow")
-set(ARROW_BUNDLED_DEPS "arrow_bundled_dependencies")
+if(WIN32)
+  set(ARROW_STATIC_LIBRARY_SUFFIX ".lib")
+  set(CMAKE_SHARED_LIBRARY_PREFIX "")
+  set(ARROW_LIB_NAME "arrow_static")
+  set(ARROW_BUNDLED_DEPS "arrow_bundled_dependencies")
+else()
+  set(ARROW_STATIC_LIBRARY_SUFFIX ".a")
+  set(ARROW_LIB_NAME "arrow")
+  set(ARROW_BUNDLED_DEPS "arrow_bundled_dependencies")
+endif()
 
 set(ARROW_INSTALL_DIR "${ARROW_HOME}/install")
 set(ARROW_LIB_DIR "${ARROW_INSTALL_DIR}/lib")
@@ -29,6 +35,11 @@ function(FIND_ARROW_LIB LIB_NAME)
     set(ARROW_LIB_FULL_NAME
         ${CMAKE_SHARED_LIBRARY_PREFIX}${LIB_NAME}${ARROW_STATIC_LIBRARY_SUFFIX})
     add_library(Arrow::${LIB_NAME} STATIC IMPORTED)
+    # On Windows, ARROW_LIB_NAME is 'arrow_static'. Create Arrow::arrow alias so
+    # code that references Arrow::arrow works on both platforms.
+    if(WIN32 AND "${LIB_NAME}" STREQUAL "arrow_static" AND NOT TARGET Arrow::arrow)
+      add_library(Arrow::arrow ALIAS Arrow::arrow_static)
+    endif()
     # Firstly find the lib from bundled path in Velox. If not found, try to find
     # it from system.
     find_library(

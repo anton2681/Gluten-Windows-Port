@@ -28,6 +28,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.execution.{BroadcastUtils, SparkPlan}
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -204,9 +205,17 @@ object VeloxColumnarToRowExec {
           }
           val (offset, length) =
             (info.offsets(rowId - baseLength), info.lengths(rowId - baseLength))
-          row.pointTo(null, info.memoryAddress + offset, length)
+          // Point directly into the Java byte[] (GC-managed, no native pointer).
+          // Platform.BYTE_ARRAY_OFFSET is the offset of element 0 in a byte array
+          // object; adding `offset` gives the start of this row's serialized data.
+          row.pointTo(info.data, Platform.BYTE_ARRAY_OFFSET + offset, length)
           rowId += 1
-          row
+          // Each call to next() reuses `row` (mutated in place), so copy it to a
+          // fresh independent UnsafeRow before returning, just as Spark's own
+          // UnsafeRowWriter-based iterators do.  Because info.data is a Java byte[],
+          // this copy is entirely on the Java heap — no native pointer is involved,
+          // so there is no use-after-free risk.
+          row.copy()
         }
       }
     }

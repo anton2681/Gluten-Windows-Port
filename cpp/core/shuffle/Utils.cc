@@ -20,8 +20,28 @@
 #include <arrow/record_batch.h>
 #include <fcntl.h>
 #include <glog/logging.h>
+#ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
+#else
+#include <io.h>
+// Map POSIX open flags to Windows equivalents
+#ifndef O_WRONLY
+#define O_WRONLY _O_WRONLY
+#endif
+#ifndef O_CREAT
+#define O_CREAT _O_CREAT
+#endif
+#ifndef O_TRUNC
+#define O_TRUNC _O_TRUNC
+#endif
+#ifndef O_EXCL
+#define O_EXCL _O_EXCL
+#endif
+#ifndef O_RDWR
+#define O_RDWR _O_RDWR
+#endif
+#endif
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -56,12 +76,29 @@ arrow::Result<std::shared_ptr<MmapFileStream>> MmapFileStream::open(const std::s
 
   ARROW_RETURN_IF(size == 0, arrow::Status::Invalid("Cannot mmap an empty file: ", path));
 
+#ifdef _WIN32
+  // On Windows, read the file into a heap-allocated buffer instead of mmap.
+  uint8_t* buffer = static_cast<uint8_t*>(std::malloc(size));
+  if (buffer == nullptr) {
+    return arrow::Status::OutOfMemory("Failed to allocate buffer of size ", size, " for file: ", path);
+  }
+  int64_t bytesRead = 0;
+  while (bytesRead < size) {
+    ARROW_ASSIGN_OR_RAISE(auto n, arrow::internal::FileRead(fd.fd(), buffer + bytesRead, size - bytesRead));
+    if (n == 0) {
+      break;
+    }
+    bytesRead += n;
+  }
+  return std::make_shared<MmapFileStream>(std::move(fd), buffer, size, prefetchSize);
+#else
   void* result = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd.fd(), 0);
   if (result == MAP_FAILED) {
     return arrow::Status::IOError("Memory mapping file failed: ", ::arrow::internal::ErrnoMessage(errno));
   }
 
   return std::make_shared<MmapFileStream>(std::move(fd), static_cast<uint8_t*>(result), size, prefetchSize);
+#endif
 }
 
 arrow::Result<int64_t> MmapFileStream::actualReadSize(int64_t nbytes) {
@@ -76,6 +113,7 @@ bool MmapFileStream::closed() const {
 };
 
 void MmapFileStream::advance(int64_t length) {
+#ifndef _WIN32
   // Dont need data before pos
   auto purgeLength = (pos_ - posRetain_) / prefetchSize_ * prefetchSize_;
   if (purgeLength > 0) {
@@ -85,11 +123,12 @@ void MmapFileStream::advance(int64_t length) {
     }
     posRetain_ += purgeLength;
   }
-
+#endif
   pos_ += length;
 }
 
 void MmapFileStream::willNeed(int64_t length) {
+#ifndef _WIN32
   // Skip if already fetched
   if (pos_ + length <= posFetch_) {
     return;
@@ -104,14 +143,19 @@ void MmapFileStream::willNeed(int64_t length) {
   }
 
   posFetch_ += fetchLen;
+#endif
 }
 
 arrow::Status MmapFileStream::Close() {
   if (data_ != nullptr) {
+#ifdef _WIN32
+    std::free(data_);
+#else
     int result = munmap(data_, size_);
     if (result != 0) {
       LOG(WARNING) << "munmap failed";
     }
+#endif
     data_ = nullptr;
   }
 
@@ -150,7 +194,7 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> MmapFileStream::Read(int64_t nbyte
 std::string gluten::getShuffleSpillDir(const std::string& configuredDir, int32_t subDirId) {
   std::stringstream ss;
   ss << std::setfill('0') << std::setw(2) << std::hex << subDirId;
-  return std::filesystem::path(configuredDir) / ss.str();
+  return (std::filesystem::path(configuredDir) / ss.str()).string();
 }
 
 arrow::Result<std::string> gluten::createTempShuffleFile(const std::string& dir) {
@@ -172,7 +216,11 @@ arrow::Result<std::string> gluten::createTempShuffleFile(const std::string& dir)
   while (exist) {
     filePath = parentPath / ("temp-shuffle-" + generateUuid());
     if (!std::filesystem::exists(filePath)) {
+#ifdef _WIN32
+      auto fd = _open(filePath.string().c_str(), O_CREAT | O_EXCL | O_RDWR, 0666);
+#else
       auto fd = open(filePath.c_str(), O_CREAT | O_EXCL | O_RDWR, 0666);
+#endif
       if (fd < 0) {
         if (errno != EEXIST) {
           return arrow::Status::IOError(
@@ -180,11 +228,15 @@ arrow::Result<std::string> gluten::createTempShuffleFile(const std::string& dir)
         }
       } else {
         exist = false;
+#ifdef _WIN32
+        _close(fd);
+#else
         close(fd);
+#endif
       }
     }
   }
-  return filePath;
+  return filePath.string();
 }
 
 arrow::Result<std::vector<std::shared_ptr<arrow::DataType>>> gluten::toShuffleTypeId(

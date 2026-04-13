@@ -250,6 +250,11 @@ std::shared_ptr<ColumnarBatch> WholeStageResultIterator::next() {
     future.wait();
   }
   if (vector == nullptr) {
+    // Eagerly collect metrics while the Velox task and all its operator state
+    // are still fully alive. If we defer this to getMetrics() (called from
+    // nativeFetchMetrics), Velox may have already freed page-aligned operator
+    // stats buffers or query context memory, causing an access violation.
+    collectMetrics();
     return nullptr;
   }
   uint64_t numRows = vector->size();

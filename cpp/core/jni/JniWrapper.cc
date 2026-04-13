@@ -277,7 +277,7 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
 
   nativeColumnarToRowInfoClass =
       createGlobalClassReferenceOrError(env, "Lorg/apache/gluten/vectorized/NativeColumnarToRowInfo;");
-  nativeColumnarToRowInfoConstructor = getMethodIdOrError(env, nativeColumnarToRowInfoClass, "<init>", "([I[IJ)V");
+  nativeColumnarToRowInfoConstructor = getMethodIdOrError(env, nativeColumnarToRowInfoClass, "<init>", "([I[I[B)V");
 
   shuffleReaderMetricsClass =
       createGlobalClassReferenceOrError(env, "Lorg/apache/gluten/vectorized/ShuffleReaderMetrics;");
@@ -561,7 +561,7 @@ JNIEXPORT jobject JNICALL Java_org_apache_gluten_metrics_IteratorMetricsJniWrapp
   for (auto i = static_cast<int>(Metrics::kBegin); i != static_cast<int>(Metrics::kEnd); ++i) {
     longArray[i] = env->NewLongArray(numMetrics);
     if (metrics) {
-      env->SetLongArrayRegion(longArray[i], 0, numMetrics, metrics->get((Metrics::TYPE)i));
+      env->SetLongArrayRegion(longArray[i], 0, numMetrics, reinterpret_cast<const jlong*>(metrics->get((Metrics::TYPE)i)));
     }
   }
 
@@ -755,10 +755,19 @@ Java_org_apache_gluten_vectorized_NativeColumnarToRowJniWrapper_nativeColumnarTo
   auto lengthsArr = env->NewIntArray(numRows);
   auto lengthsSrc = reinterpret_cast<const jint*>(lengths.data());
   env->SetIntArrayRegion(lengthsArr, 0, numRows, lengthsSrc);
-  long address = reinterpret_cast<long>(columnarToRowConverter->getBufferAddress());
+
+  // Compute the total number of bytes occupied by the serialized rows in this
+  // chunk so we can copy them into a GC-managed Java byte[].  The last row ends
+  // at offsets[numRows-1] + lengths[numRows-1].
+  jint totalBytes = (numRows > 0) ? (static_cast<jint>(offsets[numRows - 1]) + static_cast<jint>(lengths[numRows - 1])) : 0;
+  jbyteArray dataArr = env->NewByteArray(totalBytes);
+  if (totalBytes > 0) {
+    env->SetByteArrayRegion(
+        dataArr, 0, totalBytes, reinterpret_cast<const jbyte*>(columnarToRowConverter->getBufferAddress()));
+  }
 
   jobject nativeColumnarToRowInfo =
-      env->NewObject(nativeColumnarToRowInfoClass, nativeColumnarToRowInfoConstructor, offsetsArr, lengthsArr, address);
+      env->NewObject(nativeColumnarToRowInfoClass, nativeColumnarToRowInfoConstructor, offsetsArr, lengthsArr, dataArr);
   return nativeColumnarToRowInfo;
   JNI_METHOD_END(nullptr)
 }

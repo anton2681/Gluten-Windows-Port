@@ -115,7 +115,7 @@ std::shared_ptr<ColumnarBatchIterator> VeloxWholeStageDumper::dumpInputIterator(
 
   // Velox parquet writer requires aggregate memory pool.
   auto writer = std::make_shared<VeloxColumnarBatchWriter>(
-      dumpPath, batchSize_, pool_->addAggregateChild(fmt::format("dump_iterator.{}", iteratorIndex)));
+      dumpPath.string(), batchSize_, pool_->addAggregateChild(fmt::format("dump_iterator.{}", iteratorIndex)));
 
   while (auto cb = inputIterator->next()) {
     GLUTEN_THROW_NOT_OK(writer->write(cb));
@@ -124,7 +124,7 @@ std::shared_ptr<ColumnarBatchIterator> VeloxWholeStageDumper::dumpInputIterator(
 
   // Velox parquet reader requires leaf memory pool.
   return std::make_shared<ParquetStreamReaderIterator>(
-      dumpPath, batchSize_, pool_->addLeafChild(fmt::format("retrieve_iterator.{}", iteratorIndex)));
+      dumpPath.string(), batchSize_, pool_->addLeafChild(fmt::format("retrieve_iterator.{}", iteratorIndex)));
 }
 
 } // namespace gluten

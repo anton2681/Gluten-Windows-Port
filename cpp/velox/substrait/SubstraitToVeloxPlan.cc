@@ -43,6 +43,14 @@
 using namespace cudf_velox::connector::hive;
 #endif
 
+// Windows SDK defines BOOLEAN as a typedef for BYTE (winnt.h), which conflicts
+// with facebook::velox::BOOLEAN() function used below.
+#ifdef _WIN32
+#ifdef BOOLEAN
+#undef BOOLEAN
+#endif
+#endif
+
 namespace gluten {
 namespace {
 
@@ -144,7 +152,7 @@ RowTypePtr getJoinOutputType(
       std::vector<std::string> outputNames = leftNode->outputType()->names();
       std::vector<TypePtr> outputTypes = leftNode->outputType()->children();
       outputNames.emplace_back("exists");
-      outputTypes.emplace_back(BOOLEAN());
+      outputTypes.emplace_back(facebook::velox::BOOLEAN());
       return std::make_shared<const RowType>(std::move(outputNames), std::move(outputTypes));
     } else {
       return leftNode->outputType();
@@ -156,7 +164,7 @@ RowTypePtr getJoinOutputType(
       std::vector<std::string> outputNames = rightNode->outputType()->names();
       std::vector<TypePtr> outputTypes = rightNode->outputType()->children();
       outputNames.emplace_back("exists");
-      outputTypes.emplace_back(BOOLEAN());
+      outputTypes.emplace_back(facebook::velox::BOOLEAN());
       return std::make_shared<const RowType>(std::move(outputNames), std::move(outputTypes));
     } else {
       return rightNode->outputType();
@@ -940,13 +948,14 @@ core::PlanNodePtr SubstraitToVeloxPlanConverter::toVeloxPlan(const ::substrait::
 
   if (injectedProject) {
     // Child should be either ProjectNode or CudfValueStreamNode (GPU) in case of project fallback.
-    VELOX_CHECK(
-        (std::dynamic_pointer_cast<const core::ProjectNode>(childNode) != nullptr ||
+    bool validChild = (std::dynamic_pointer_cast<const core::ProjectNode>(childNode) != nullptr ||
         std::dynamic_pointer_cast<const core::TableScanNode>(childNode) != nullptr
 #ifdef GLUTEN_ENABLE_GPU
             || std::dynamic_pointer_cast<const CudfValueStreamNode>(childNode) != nullptr
 #endif
-        ) && childNode->outputType()->size() > requiredChildOutput.size(),
+        );
+    VELOX_CHECK(
+        validChild && childNode->outputType()->size() > requiredChildOutput.size(),
         "injectedProject is true, but the ProjectNode or TableScanNode or CudfValueStreamNode (in case of projection fallback)"
         " is missing or does not have the corresponding projection field");
 

@@ -17,19 +17,20 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 
 namespace gluten {
 
 struct Metrics {
   unsigned int numMetrics = 0;
-  long veloxToArrow = 0;
+  int64_t veloxToArrow = 0;
 
   // The underlying memory buffer.
-  std::unique_ptr<long[]> array;
-
-  // Point to array.get() after the above unique_ptr created.
-  long* arrayRawPtr = nullptr;
+  // Use int64_t (not long) so it is 64-bit on every platform, including
+  // Windows where sizeof(long)==4. JniWrapper passes these arrays to
+  // SetLongArrayRegion which expects jlong (= int64_t) elements.
+  std::unique_ptr<int64_t[]> array;
 
   // Optional stats string.
   std::optional<std::string> stats = std::nullopt;
@@ -99,8 +100,7 @@ struct Metrics {
     kNum = kEnd - kBegin
   };
 
-  Metrics(unsigned int numMetrics) : numMetrics(numMetrics), array(new long[numMetrics * kNum]) {
-    arrayRawPtr = array.get();
+  Metrics(unsigned int numMetrics) : numMetrics(numMetrics), array(new int64_t[numMetrics * kNum]()) {
   }
 
   Metrics(const Metrics&) = delete;
@@ -108,10 +108,10 @@ struct Metrics {
   Metrics& operator=(const Metrics&) = delete;
   Metrics& operator=(Metrics&&) = delete;
 
-  long* get(TYPE type) {
+  int64_t* get(TYPE type) {
     assert(static_cast<int>(type) >= static_cast<int>(kBegin) && static_cast<int>(type) < static_cast<int>(kEnd));
     auto offset = (static_cast<int>(type) - static_cast<int>(kBegin)) * numMetrics;
-    return &arrayRawPtr[offset];
+    return &array.get()[offset];
   }
 };
 

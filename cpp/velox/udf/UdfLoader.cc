@@ -15,7 +15,36 @@
  * limitations under the License.
  */
 
+#ifdef _WIN32
+// Windows equivalents for POSIX dlopen/dlsym/dlerror/dlclose.
+#ifndef NOMINMAX
+#define NOMINMAX 1
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <windows.h>
+#include <string>
+static void* dlopen(const char* path, int /*flags*/) {
+  return static_cast<void*>(LoadLibraryA(path));
+}
+static void* dlsym(void* handle, const char* symbol) {
+  return reinterpret_cast<void*>(GetProcAddress(static_cast<HMODULE>(handle), symbol));
+}
+static const char* dlerror() {
+  static thread_local std::string msg;
+  DWORD err = GetLastError();
+  if (!err) return nullptr;
+  char buf[256];
+  FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr, err, 0, buf, sizeof(buf), nullptr);
+  msg = buf;
+  return msg.c_str();
+}
+#define RTLD_LAZY 0
+#else
 #include <dlfcn.h>
+#endif
 #include <google/protobuf/arena.h>
 #include <vector>
 #include "velox/expression/SignatureBinder.h"

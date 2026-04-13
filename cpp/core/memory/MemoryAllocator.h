@@ -25,6 +25,20 @@
 
 #include "memory/AllocationListener.h"
 
+// On Windows, symbols in a DLL must be explicitly exported/imported.
+// See MemoryManager.h for a fuller explanation of this pattern.
+#ifndef GLUTEN_EXPORT
+#ifdef _WIN32
+#ifdef gluten_EXPORTS
+#define GLUTEN_EXPORT __declspec(dllexport)
+#else
+#define GLUTEN_EXPORT __declspec(dllimport)
+#endif
+#else
+#define GLUTEN_EXPORT
+#endif
+#endif
+
 namespace gluten {
 
 class MemoryAllocator {
@@ -52,24 +66,24 @@ class ListenableMemoryAllocator final : public MemoryAllocator {
       : delegated_(delegated), listener_(listener) {}
 
  public:
-  bool allocate(int64_t size, void** out) override;
+  GLUTEN_EXPORT bool allocate(int64_t size, void** out) override;
 
-  bool allocateZeroFilled(int64_t nmemb, int64_t size, void** out) override;
+  GLUTEN_EXPORT bool allocateZeroFilled(int64_t nmemb, int64_t size, void** out) override;
 
-  bool allocateAligned(uint64_t alignment, int64_t size, void** out) override;
+  GLUTEN_EXPORT bool allocateAligned(uint64_t alignment, int64_t size, void** out) override;
 
-  bool reallocate(void* p, int64_t size, int64_t newSize, void** out) override;
+  GLUTEN_EXPORT bool reallocate(void* p, int64_t size, int64_t newSize, void** out) override;
 
-  bool reallocateAligned(void* p, uint64_t alignment, int64_t size, int64_t newSize, void** out) override;
+  GLUTEN_EXPORT bool reallocateAligned(void* p, uint64_t alignment, int64_t size, int64_t newSize, void** out) override;
 
-  bool free(void* p, int64_t size) override;
+  GLUTEN_EXPORT bool free(void* p, int64_t size) override;
 
-  int64_t getBytes() const override;
+  GLUTEN_EXPORT int64_t getBytes() const override;
 
-  int64_t peakBytes() const override;
+  GLUTEN_EXPORT int64_t peakBytes() const override;
 
  private:
-  void updateUsage(int64_t size);
+  GLUTEN_EXPORT void updateUsage(int64_t size);
   MemoryAllocator* const delegated_;
   AllocationListener* const listener_;
   std::atomic_int64_t usedBytes_{0L};
@@ -78,26 +92,26 @@ class ListenableMemoryAllocator final : public MemoryAllocator {
 
 class StdMemoryAllocator final : public MemoryAllocator {
  public:
-  bool allocate(int64_t size, void** out) override;
+  GLUTEN_EXPORT bool allocate(int64_t size, void** out) override;
 
-  bool allocateZeroFilled(int64_t nmemb, int64_t size, void** out) override;
+  GLUTEN_EXPORT bool allocateZeroFilled(int64_t nmemb, int64_t size, void** out) override;
 
-  bool allocateAligned(uint64_t alignment, int64_t size, void** out) override;
+  GLUTEN_EXPORT bool allocateAligned(uint64_t alignment, int64_t size, void** out) override;
 
-  bool reallocate(void* p, int64_t size, int64_t newSize, void** out) override;
+  GLUTEN_EXPORT bool reallocate(void* p, int64_t size, int64_t newSize, void** out) override;
 
-  bool reallocateAligned(void* p, uint64_t alignment, int64_t size, int64_t newSize, void** out) override;
+  GLUTEN_EXPORT bool reallocateAligned(void* p, uint64_t alignment, int64_t size, int64_t newSize, void** out) override;
 
-  bool free(void* p, int64_t size) override;
+  GLUTEN_EXPORT bool free(void* p, int64_t size) override;
 
-  int64_t getBytes() const override;
+  GLUTEN_EXPORT int64_t getBytes() const override;
 
-  int64_t peakBytes() const override;
+  GLUTEN_EXPORT int64_t peakBytes() const override;
 
  private:
   std::atomic_int64_t bytes_{0};
 };
 
-std::shared_ptr<MemoryAllocator> defaultMemoryAllocator();
+GLUTEN_EXPORT std::shared_ptr<MemoryAllocator> defaultMemoryAllocator();
 
 } // namespace gluten

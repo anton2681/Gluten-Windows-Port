@@ -63,14 +63,14 @@ class Runtime : public std::enable_shared_from_this<Runtime> {
       MemoryManager* memoryManager,
       const std::unordered_map<std::string, std::string>& sessionConf)>;
   using Releaser = std::function<void(Runtime*)>;
-  static void registerFactory(const std::string& kind, Factory factory, Releaser releaser);
-  static Runtime* create(
+  GLUTEN_EXPORT static void registerFactory(const std::string& kind, Factory factory, Releaser releaser);
+  GLUTEN_EXPORT static Runtime* create(
       const std::string& kind,
       MemoryManager* memoryManager,
       const std::unordered_map<std::string, std::string>& sessionConf = {});
-  static void release(Runtime*);
-  static std::optional<std::string>* localWriteFilesTempPath();
-  static std::optional<std::string>* localWriteFileName();
+  GLUTEN_EXPORT static void release(Runtime*);
+  GLUTEN_EXPORT static std::optional<std::string>* localWriteFilesTempPath();
+  GLUTEN_EXPORT static std::optional<std::string>* localWriteFileName();
 
   Runtime(
       const std::string& kind,

@@ -40,7 +40,7 @@ if(NOT glog_FOUND)
 endif()
 
 get_filename_component(libglog_ext ${GLOG_LIBRARY} EXT)
-if(libglog_ext STREQUAL ".a")
+if(libglog_ext STREQUAL ".a" OR libglog_ext STREQUAL ".lib")
   set(libglog_type STATIC)
   set(libgflags_component static)
 else()

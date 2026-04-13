@@ -66,14 +66,19 @@ if(NOT DEFINED VELOX_HOME)
   message(STATUS "Set VELOX_HOME to ${VELOX_HOME}")
 endif()
 
-if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
-  set(ARROW_HOME
-      ${VELOX_HOME}/_build/debug/CMake/resolve_dependency_modules/arrow/arrow_ep/
-  )
+if(NOT DEFINED ARROW_HOME)
+  if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    set(ARROW_HOME
+        ${VELOX_HOME}/_build/debug/CMake/resolve_dependency_modules/arrow/arrow_ep/
+    )
+  else()
+    set(ARROW_HOME
+        ${VELOX_HOME}/_build/release/CMake/resolve_dependency_modules/arrow/arrow_ep
+    )
+  endif()
+  message(STATUS "Set ARROW_HOME to ${ARROW_HOME}")
 else()
-  set(ARROW_HOME
-      ${VELOX_HOME}/_build/release/CMake/resolve_dependency_modules/arrow/arrow_ep
-  )
+  message(STATUS "Using provided ARROW_HOME: ${ARROW_HOME}")
 endif()
 
 include(ResolveDependency)
@@ -82,29 +87,47 @@ include(ResolveDependency)
 # Compiler flags
 #
 
-if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
-  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -ggdb -O0")
-  message(STATUS "CMAKE_CXX_FLAGS_DEBUG=${CMAKE_CXX_FLAGS_DEBUG}")
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+  # MSVC: use /Od for debug, NDEBUG already set via CMAKE_BUILD_TYPE handling
+  if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /Zi")
+    message(STATUS "CMAKE_CXX_FLAGS_DEBUG=${CMAKE_CXX_FLAGS_DEBUG}")
+  else()
+    add_definitions(-DNDEBUG)
+    message(STATUS "Add definition NDEBUG")
+  endif()
 else()
-  add_definitions(-DNDEBUG)
-  message(STATUS "Add definition NDEBUG")
+  if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -ggdb -O0")
+    message(STATUS "CMAKE_CXX_FLAGS_DEBUG=${CMAKE_CXX_FLAGS_DEBUG}")
+  else()
+    add_definitions(-DNDEBUG)
+    message(STATUS "Add definition NDEBUG")
+  endif()
 endif()
 
-set(KNOWN_WARNINGS
-    "-Wall \
-       -Wno-sign-compare \
-       -Wno-comment \
-       -Werror \
-       -Wno-error=parentheses \
-       -Wno-error=unused-function \
-       -Wno-error=unused-variable \
-       -Wno-error=uninitialized \
-       -Wno-error=maybe-uninitialized \
-       -Wno-unknown-warning-option \
-       -Wno-strict-aliasing \
-       -Wno-ignored-qualifiers \
-       -Wno-deprecated-declarations \
-       -Wno-attributes")
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+  # MSVC does not use GCC-style warning flags; use permissive mode suppression.
+  # /Zc:preprocessor enables the conforming preprocessor required for
+  # ##__VA_ARGS__ elision (used in velox/common/base/Exceptions.h macros).
+  set(KNOWN_WARNINGS "/W3 /wd4018 /wd4146 /wd4244 /wd4267 /wd4305 /wd4800 /wd4996 /Zc:preprocessor")
+else()
+  set(KNOWN_WARNINGS
+      "-Wall \
+         -Wno-sign-compare \
+         -Wno-comment \
+         -Werror \
+         -Wno-error=parentheses \
+         -Wno-error=unused-function \
+         -Wno-error=unused-variable \
+         -Wno-error=uninitialized \
+         -Wno-error=maybe-uninitialized \
+         -Wno-unknown-warning-option \
+         -Wno-strict-aliasing \
+         -Wno-ignored-qualifiers \
+         -Wno-deprecated-declarations \
+         -Wno-attributes")
+endif()
 
 if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
   set(KNOWN_WARNINGS "-Wno-error=unused-but-set-variable \
@@ -129,6 +152,8 @@ elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
       -Wno-error=unused-private-field \
       -Wno-error=pessimizing-move \
       ${KNOWN_WARNINGS}")
+elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
+  # MSVC warning flags already set above; nothing extra needed here
 else()
   message(FATAL_ERROR "Unsupported compiler ID: ${CMAKE_CXX_COMPILER_ID}")
 endif()
@@ -154,14 +179,20 @@ endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${KNOWN_WARNINGS}")
 
 # Keep same compile option with Velox.
-execute_process(
-  COMMAND
-    bash -c
-    "( source ${VELOX_HOME}/scripts/setup-helper-functions.sh && echo -n $(get_cxx_flags $ENV{CPU_TARGET}))"
-  OUTPUT_VARIABLE SCRIPT_CXX_FLAGS
-  RESULT_VARIABLE COMMAND_STATUS)
-if(COMMAND_STATUS EQUAL "1")
-  message(FATAL_ERROR "Unable to determine compiler flags!")
+# On Windows/MSVC, skip the bash script (not available); use empty flags.
+if(NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC" AND NOT WIN32)
+  execute_process(
+    COMMAND
+      bash -c
+      "( source ${VELOX_HOME}/scripts/setup-helper-functions.sh && echo -n $(get_cxx_flags $ENV{CPU_TARGET}))"
+    OUTPUT_VARIABLE SCRIPT_CXX_FLAGS
+    RESULT_VARIABLE COMMAND_STATUS)
+  if(COMMAND_STATUS EQUAL "1")
+    message(FATAL_ERROR "Unable to determine compiler flags!")
+  endif()
+else()
+  set(SCRIPT_CXX_FLAGS "")
+  set(COMMAND_STATUS 0)
 endif()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SCRIPT_CXX_FLAGS}")

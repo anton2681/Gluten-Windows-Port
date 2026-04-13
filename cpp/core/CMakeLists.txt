@@ -51,7 +51,11 @@ endif(CCACHE_FOUND)
 
 macro(find_protobuf)
   set(CMAKE_FIND_LIBRARY_SUFFIXES_BCK ${CMAKE_FIND_LIBRARY_SUFFIXES})
-  set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+  if(WIN32)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".lib")
+  else()
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+  endif()
 
   if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
     # brew --prefix protobuf will not return the correct path. Update `brew
@@ -193,7 +197,7 @@ target_link_libraries(gluten LINK_PUBLIC ${PROTOBUF_LIBRARY})
 
 add_custom_command(
   OUTPUT ${SUBSTRAIT_PROTO_OUTPUT_FILES}
-  COMMAND ${PROTOC_BIN} --proto_path ${SUBSTRAIT_PROTO_SRC_DIR}/ --cpp_out
+  COMMAND ${PROTOC_BIN} --proto_path ${SUBSTRAIT_PROTO_SRC_DIR}/ --proto_path ${PROTOBUF_WELLKNOWN_PROTO_DIR} --cpp_out
           ${PROTO_OUTPUT_DIR} ${SUBSTRAIT_PROTO_FILES}
   DEPENDS ${SUBSTRAIT_PROTO_DIR}
   COMMENT "Running Substrait PROTO compiler"

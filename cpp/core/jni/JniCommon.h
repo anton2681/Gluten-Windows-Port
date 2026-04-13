@@ -19,7 +19,9 @@
 
 #include <arrow/ipc/reader.h>
 #include <arrow/ipc/writer.h>
+#ifndef _WIN32
 #include <execinfo.h>
+#endif
 #include <jni.h>
 
 #include "compute/ProtobufUtils.h"
@@ -334,13 +336,15 @@ makeJniColumnarBatchIterator(JNIEnv* env, jobject jColumnarBatchItr, Runtime* ru
 // TODO: Move the static functions to namespace gluten
 
 static inline void backtrace() {
+#ifndef _WIN32
   void* array[1024];
-  auto size = backtrace(array, 1024);
+  auto size = ::backtrace(array, 1024);
   char** strings = backtrace_symbols(array, size);
   for (size_t i = 0; i < size; ++i) {
     LOG(INFO) << strings[i];
   }
   free(strings);
+#endif
 }
 
 static inline arrow::Compression::type getCompressionType(JNIEnv* env, jstring codecJstr) {

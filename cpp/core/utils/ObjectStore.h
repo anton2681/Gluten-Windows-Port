@@ -20,6 +20,20 @@
 #include <map>
 #include "utils/ResourceMap.h"
 
+// On Windows, symbols in a DLL must be explicitly exported/imported.
+// See MemoryManager.h for a fuller explanation of this pattern.
+#ifndef GLUTEN_EXPORT
+#ifdef _WIN32
+#ifdef gluten_EXPORTS
+#define GLUTEN_EXPORT __declspec(dllexport)
+#else
+#define GLUTEN_EXPORT __declspec(dllimport)
+#endif
+#else
+#define GLUTEN_EXPORT
+#endif
+#endif
+
 namespace gluten {
 
 // ObjectHandle is a signed int64 consisting of:
@@ -49,7 +63,7 @@ struct SafeSizeOf<void> {
 // a shared-ptr's lifecycle to a Java-side object or some kind of resource manager.
 class ObjectStore {
  public:
-  static std::unique_ptr<ObjectStore> create();
+  GLUTEN_EXPORT static std::unique_ptr<ObjectStore> create();
 
   static void release(ObjectHandle handle) {
     auto [store, resourceId] = lookup(handle);
@@ -62,7 +76,7 @@ class ObjectStore {
     return store->retrieveInternal<T>(resourceId);
   }
 
-  virtual ~ObjectStore();
+  GLUTEN_EXPORT virtual ~ObjectStore();
 
   StoreHandle id() {
     return storeId_;
@@ -79,9 +93,9 @@ class ObjectStore {
   }
 
  private:
-  static ResourceMap<ObjectStore*>& stores();
+  GLUTEN_EXPORT static ResourceMap<ObjectStore*>& stores();
 
-  static std::pair<ObjectStore*, ResourceHandle> lookup(ObjectHandle handle);
+  GLUTEN_EXPORT static std::pair<ObjectStore*, ResourceHandle> lookup(ObjectHandle handle);
 
   struct ObjectDebugInfo {
     const std::string_view typeName;
@@ -103,7 +117,7 @@ class ObjectStore {
     return casted;
   }
 
-  void releaseInternal(ResourceHandle handle);
+  GLUTEN_EXPORT void releaseInternal(ResourceHandle handle);
 
   ObjectStore(StoreHandle storeId) : storeId_(storeId){};
   StoreHandle storeId_;

@@ -17,8 +17,15 @@
 
 #pragma once
 
+#ifdef _MSC_VER
+#include <cstdint>
+// POSIX u_int32_t / u_int64_t are not defined on MSVC; map them to standard types.
+using u_int32_t = uint32_t;
+using u_int64_t = uint64_t;
+#endif
+
 #include "SubstraitToVeloxExpr.h"
-#include "TypeUtils.h"
+// TypeUtils.h removed - not used in this file and not available in this build
 #include "velox/connectors/hive/FileProperties.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/core/PlanNode.h"

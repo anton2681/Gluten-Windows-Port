@@ -150,7 +150,11 @@ object AllGlutenConfiguration {
   def isRegenerateGoldenFiles: Boolean = sys.env.get("GLUTEN_UPDATE").contains("1")
 
   def getCodeSourceLocation[T](clazz: Class[T]): String = {
-    clazz.getProtectionDomain.getCodeSource.getLocation.toURI.getPath
+    val rawPath = clazz.getProtectionDomain.getCodeSource.getLocation.toURI.getPath
+    // On Windows, toURI.getPath returns a path like "/C:/Users/..." with a leading slash.
+    // Strip the leading slash so that Paths.get() can parse it as a valid Windows path.
+    val isWindows = sys.props.getOrElse("os.name", "").toLowerCase.contains("win")
+    if (isWindows && rawPath.matches("/[A-Za-z]:/.*")) rawPath.substring(1) else rawPath
   }
 
   /**

@@ -26,7 +26,27 @@
 #include <fcntl.h>
 #include <glog/logging.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <unistd.h>
+#else
+#include <io.h>
+// Map POSIX open flags to Windows equivalents
+#ifndef O_WRONLY
+#define O_WRONLY _O_WRONLY
+#endif
+#ifndef O_CREAT
+#define O_CREAT _O_CREAT
+#endif
+#ifndef O_TRUNC
+#define O_TRUNC _O_TRUNC
+#endif
+// On Windows, use _open instead of POSIX open
+#ifndef open
+#define open _open
+#endif
+// fchmod is a no-op on Windows; file permissions are managed differently
+static inline int fchmod(int /*fd*/, int /*mode*/) { return 0; }
+#endif
 #include <filesystem>
 #include <random>
 #include <thread>

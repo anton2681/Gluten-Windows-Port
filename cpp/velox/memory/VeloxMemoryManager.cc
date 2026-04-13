@@ -20,6 +20,11 @@
 #include <jemalloc/jemalloc.h>
 #endif
 
+#ifdef _WIN32
+#include <thread>
+#include <chrono>
+#endif
+
 #include "compute/VeloxBackend.h"
 
 #include "velox/common/memory/MallocAllocator.h"
@@ -173,7 +178,12 @@ class ListenableArbitrator : public velox::memory::MemoryArbitrator {
       listener_->allocationChanged(neededBytes);
     } catch (const std::exception&) {
       VLOG(2) << "ListenableArbitrator growCapacityInternal failed, stacktrace: "
-              << velox::process::StackTrace().toString();
+#ifndef _WIN32
+              << velox::process::StackTrace().toString()
+#else
+              << "(stack trace unavailable on Windows)"
+#endif
+          ;
       // if allocationChanged failed, we need to free the reclaimed bytes
       listener_->allocationChanged(-reclaimedFreeBytes);
       std::rethrow_exception(std::current_exception());
@@ -457,7 +467,11 @@ VeloxMemoryManager::~VeloxMemoryManager() {
     uint32_t waitMs = 50 * static_cast<uint32_t>(pow(1.5, tryCount)); // 50ms, 75ms, 112.5ms ...
     LOG(INFO) << "There are still outstanding Velox memory allocations. Waiting for " << waitMs
               << " ms to let possible async tasks done... ";
+#ifdef _WIN32
+    std::this_thread::sleep_for(std::chrono::milliseconds(waitMs));
+#else
     usleep(waitMs * 1000);
+#endif
     accumulatedWaitMs += waitMs;
   }
   if (!destructed) {

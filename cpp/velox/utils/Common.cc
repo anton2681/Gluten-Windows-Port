@@ -49,7 +49,7 @@ bool ensureRegexIsCompatible(const std::string& pattern, std::string& error) {
 }
 
 std::unique_ptr<re2::RE2> compilePattern(const std::string& pattern) {
-  return std::make_unique<re2::RE2>(re2::StringPiece(pattern), RE2::Quiet);
+  return std::make_unique<re2::RE2>(pattern);
 }
 
 bool validatePattern(const std::string& pattern, std::string& error) {

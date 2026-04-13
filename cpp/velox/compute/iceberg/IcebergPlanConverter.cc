@@ -17,6 +17,15 @@
 
 #include "IcebergPlanConverter.h"
 
+// Windows defines DeleteFile as a macro (DeleteFileA/DeleteFileW).
+// Undefine it here so that protobuf-generated type names containing
+// "DeleteFile" (e.g. IcebergReadOptions::DeleteFile) are not macro-expanded.
+#ifdef _WIN32
+#ifdef DeleteFile
+#undef DeleteFile
+#endif
+#endif
+
 namespace gluten {
 
 std::shared_ptr<IcebergSplitInfo> IcebergPlanConverter::parseIcebergSplitInfo(

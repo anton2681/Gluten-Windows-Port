@@ -43,8 +43,10 @@
 #include "shuffle/ArrowShuffleDictionaryWriter.h"
 #include "udf/UdfLoader.h"
 #include "utils/Exception.h"
-#include "velox/common/caching/SsdCache.h"
 #include "velox/common/file/FileSystems.h"
+#ifndef _WIN32
+#include "velox/common/caching/SsdCache.h"
+#endif
 #include "velox/connectors/hive/BufferedInputBuilder.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveDataSource.h"
@@ -62,7 +64,9 @@
 DECLARE_bool(velox_exception_user_stacktrace_enabled);
 DECLARE_int32(velox_memory_num_shared_leaf_pools);
 DECLARE_bool(velox_memory_use_hugepages);
+#ifndef _WIN32
 DECLARE_bool(velox_ssd_odirect);
+#endif
 DECLARE_bool(velox_memory_pool_capacity_transfer_across_tasks);
 DECLARE_int32(cache_prefetch_min_pct);
 
@@ -252,6 +256,10 @@ void VeloxBackend::initJolFilesystem() {
 }
 
 std::unique_ptr<facebook::velox::cache::SsdCache> VeloxBackend::initSsdCache(uint64_t ssdCacheSize) {
+#ifdef _WIN32
+  VELOX_FAIL("SsdCache is not supported on Windows");
+  return nullptr;
+#else
   FLAGS_velox_ssd_odirect = backendConf_->get<bool>(kVeloxSsdODirectEnabled, false);
   int32_t ssdCacheShards = backendConf_->get<int32_t>(kVeloxSsdCacheShards, kVeloxSsdCacheShardsDefault);
   int32_t ssdCacheIOThreads = backendConf_->get<int32_t>(kVeloxSsdCacheIOThreads, kVeloxSsdCacheIOThreadsDefault);
@@ -284,10 +292,14 @@ std::unique_ptr<facebook::velox::cache::SsdCache> VeloxBackend::initSsdCache(uin
   }
   LOG(INFO) << "Initializing SSD cache with: " << config.toString();
   return ssd;
+#endif // _WIN32
 }
 
 void VeloxBackend::initCache() {
   if (backendConf_->get<bool>(kVeloxCacheEnabled, false)) {
+#ifdef _WIN32
+    LOG(WARNING) << "VeloxCache (SSD/Mmap) is not supported on Windows. Cache disabled.";
+#else
     uint64_t memCacheSize = backendConf_->get<uint64_t>(kVeloxMemCacheSize, kVeloxMemCacheSizeDefault);
     uint64_t ssdCacheSize = backendConf_->get<uint64_t>(kVeloxSsdCacheSize, kVeloxSsdCacheSizeDefault);
 
@@ -306,6 +318,7 @@ void VeloxBackend::initCache() {
 
     VELOX_CHECK_NOT_NULL(dynamic_cast<velox::cache::AsyncDataCache*>(asyncDataCache_.get()));
     LOG(INFO) << "AsyncDataCache is ready";
+#endif
   }
 }
 

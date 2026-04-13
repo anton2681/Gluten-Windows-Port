@@ -19,11 +19,11 @@ package org.apache.gluten.vectorized;
 public class NativeColumnarToRowInfo {
   public int[] offsets;
   public int[] lengths;
-  public long memoryAddress;
+  public byte[] data;
 
-  public NativeColumnarToRowInfo(int[] offsets, int[] lengths, long memoryAddress) {
+  public NativeColumnarToRowInfo(int[] offsets, int[] lengths, byte[] data) {
     this.offsets = offsets;
     this.lengths = lengths;
-    this.memoryAddress = memoryAddress;
+    this.data = data;
   }
 }
