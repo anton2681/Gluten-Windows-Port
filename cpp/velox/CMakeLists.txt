@@ -233,6 +233,42 @@ endif()
 
 add_library(velox SHARED ${VELOX_SRCS})
 
+# Arrow's bundled Thrift on Windows still emits #pragma comment(lib, "msvcrt")
+# despite velox passing ARROW_USE_STATIC_CRT + CMAKE_MSVC_RUNTIME_LIBRARY.
+# This is an Arrow upstream bug — the static CRT flag doesn't fully propagate
+# to Arrow's nested ExternalProject for Thrift. Force the linker to ignore
+# the dynamic-CRT hints so the velox.dll link with /MT static CRT (LIBCMT)
+# does not conflict (LNK4098 / LNK1319 mismatches).
+if(WIN32)
+  target_link_options(velox PRIVATE
+    /NODEFAULTLIB:msvcrt
+    /NODEFAULTLIB:msvcrtd
+    /NODEFAULTLIB:libcmtd)
+endif()
+
+# Windows DLL data exports don't propagate through WINDOWS_EXPORT_ALL_SYMBOLS
+# (CMake exports functions but not data). substrait proto generates many
+# `_X_default_instance_` static data globals that velox.dll's own .cc files
+# reference. Easiest fix: compile the same substrait .pb.cc files INTO
+# velox.dll too, so each DLL has its own copy of the proto data globals.
+# Cross-DLL access never happens (each DLL's velox/gluten code uses its own
+# copy), so duplication is safe.
+if(WIN32)
+  # SUBSTRAIT_PROTO_SRCS comes from cpp/core/CMakeLists.txt (in parent scope
+  # since core is added via add_subdirectory above).
+  get_target_property(_gluten_subst_srcs gluten SOURCES)
+  set(_velox_extra_substrait_srcs "")
+  foreach(_s ${_gluten_subst_srcs})
+    if(_s MATCHES "/proto/substrait/.*\\.pb\\.cc$")
+      list(APPEND _velox_extra_substrait_srcs ${_s})
+    endif()
+  endforeach()
+  if(_velox_extra_substrait_srcs)
+    message(STATUS "Adding ${_velox_extra_substrait_srcs} to velox target for Windows data-export workaround")
+    target_sources(velox PRIVATE ${_velox_extra_substrait_srcs})
+  endif()
+endif()
+
 if(ENABLE_GLUTEN_VCPKG AND NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
   # Hide some symbols to avoid conflict.
   target_link_options(
@@ -291,13 +327,27 @@ target_link_libraries(velox PUBLIC gluten)
 
 # Requires VELOX_MONO_LIBRARY=ON when building Velox.
 if(WIN32)
-  # On Windows, velox is split into multiple lib files
-  foreach(_part 0 1 2 3)
-    import_library(facebook::velox::part${_part} ${VELOX_BUILD_PATH}/lib/velox_part${_part}.lib)
+  # On Windows, velox is split into multiple lib files.
+  # NOTE: gangpeng's original port expected velox_part0..3 (4 manually-split
+  # parts), but the split mechanism was never committed. We build velox with
+  # VELOX_MONO_LIBRARY=OFF (the upstream default), which produces ~116 per-
+  # module sublibraries; discover them by glob and link all of them via an
+  # INTERFACE umbrella target. MSVC linker resolves symbols multi-pass so
+  # ordering across these archives is not load-bearing.
+  file(GLOB_RECURSE VELOX_SUBLIBS "${VELOX_BUILD_PATH}/velox/*.lib")
+  if(NOT VELOX_SUBLIBS)
+    message(FATAL_ERROR "No velox sublibraries found under ${VELOX_BUILD_PATH}/velox/. Did velox build?")
+  endif()
+  message(STATUS "Found ${CMAKE_LIST_LENGTH} velox sublibs to link")
+  set(_velox_sublib_targets "")
+  foreach(_lib ${VELOX_SUBLIBS})
+    get_filename_component(_libname ${_lib} NAME_WE)
+    import_library(facebook::velox::${_libname} ${_lib})
+    list(APPEND _velox_sublib_targets facebook::velox::${_libname})
   endforeach()
   add_library(facebook::velox INTERFACE IMPORTED)
   set_target_properties(facebook::velox PROPERTIES
-    INTERFACE_LINK_LIBRARIES "facebook::velox::part0;facebook::velox::part1;facebook::velox::part2;facebook::velox::part3")
+    INTERFACE_LINK_LIBRARIES "${_velox_sublib_targets}")
 else()
   import_library(facebook::velox ${VELOX_BUILD_PATH}/lib/libvelox.a)
 endif()

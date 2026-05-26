@@ -28,6 +28,7 @@ import org.apache.gluten.utils.{ArrowAbiUtil, SubstraitUtil}
 import org.apache.gluten.vectorized.{ColumnarBatchSerializerJniWrapper, HashJoinBuilder, NativeColumnarToRowInfo, NativeColumnarToRowJniWrapper}
 
 import org.apache.spark.internal.Logging
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeSeq, BindReferences, BoundReference, Expression, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
@@ -318,7 +319,7 @@ case class ColumnarBuildSideRelation(
                 }
                 val (offset, length) =
                   (info.offsets(rowId - baseLength), info.lengths(rowId - baseLength))
-                row.pointTo(null, info.memoryAddress + offset, length.toInt)
+                row.pointTo(info.data, Platform.BYTE_ARRAY_OFFSET + offset, length.toInt)
                 rowId += 1
                 row
               }

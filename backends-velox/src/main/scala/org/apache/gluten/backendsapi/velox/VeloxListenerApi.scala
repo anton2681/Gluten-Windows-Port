@@ -278,6 +278,7 @@ object VeloxListenerApi {
     val osName = System.getProperty("os.name") match {
       case n if n.contains("Linux") => "linux"
       case n if n.contains("Mac") => "darwin"
+      case n if n.contains("Windows") => "windows"
       case _ =>
         // Default to linux
         "linux"

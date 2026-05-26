@@ -44,7 +44,7 @@ using namespace cudf_velox::connector::hive;
 #endif
 
 // Windows SDK defines BOOLEAN as a typedef for BYTE (winnt.h), which conflicts
-// with facebook::velox::BOOLEAN() function used below.
+// with ::facebook::velox::BOOLEAN_() function used below.
 #ifdef _WIN32
 #ifdef BOOLEAN
 #undef BOOLEAN
@@ -152,7 +152,7 @@ RowTypePtr getJoinOutputType(
       std::vector<std::string> outputNames = leftNode->outputType()->names();
       std::vector<TypePtr> outputTypes = leftNode->outputType()->children();
       outputNames.emplace_back("exists");
-      outputTypes.emplace_back(facebook::velox::BOOLEAN());
+      outputTypes.emplace_back(::facebook::velox::BOOLEAN_());
       return std::make_shared<const RowType>(std::move(outputNames), std::move(outputTypes));
     } else {
       return leftNode->outputType();
@@ -164,7 +164,7 @@ RowTypePtr getJoinOutputType(
       std::vector<std::string> outputNames = rightNode->outputType()->names();
       std::vector<TypePtr> outputTypes = rightNode->outputType()->children();
       outputNames.emplace_back("exists");
-      outputTypes.emplace_back(facebook::velox::BOOLEAN());
+      outputTypes.emplace_back(::facebook::velox::BOOLEAN_());
       return std::make_shared<const RowType>(std::move(outputNames), std::move(outputTypes));
     } else {
       return rightNode->outputType();
@@ -409,15 +409,15 @@ core::PlanNodePtr SubstraitToVeloxPlanConverter::toVeloxPlan(const ::substrait::
       SubstraitParser::configSetInOptimization(sJoin.advanced_extension(), "isBHJ=")) {
     std::string hashTableId = sJoin.hashtableid();
 
-    std::shared_ptr<core::OpaqueHashTable> opaqueSharedHashTable = nullptr;
+    std::shared_ptr<exec::BaseHashTable> opaqueSharedHashTable = nullptr;
     bool joinHasNullKeys = false;
 
     try {
       auto hashTableBuilder = ObjectStore::retrieve<gluten::HashTableBuilder>(getJoin(hashTableId));
       joinHasNullKeys = hashTableBuilder->joinHasNullKeys();
       auto originalShared = hashTableBuilder->hashTable();
-      opaqueSharedHashTable = std::shared_ptr<core::OpaqueHashTable>(
-          originalShared, reinterpret_cast<core::OpaqueHashTable*>(originalShared.get()));
+      opaqueSharedHashTable = std::shared_ptr<exec::BaseHashTable>(
+          originalShared, reinterpret_cast<exec::BaseHashTable*>(originalShared.get()));
 
       LOG(INFO) << "Successfully retrieved and aliased HashTable for reuse. ID: " << hashTableId;
     } catch (const std::exception& e) {
@@ -427,7 +427,15 @@ core::PlanNodePtr SubstraitToVeloxPlanConverter::toVeloxPlan(const ::substrait::
       opaqueSharedHashTable = nullptr;
     }
 
-    // Create HashJoinNode node
+    // Create HashJoinNode node.
+    //
+    // NOTE (Windows port, 2026-05): gang's velox windows/msvc-port branch
+    // exposes the upstream HashJoinNode signature with 10 args (no hash-table
+    // reuse parameters). Gluten's BHJ optimization that passes the prebuilt
+    // hash table via the extra trailing args is only meaningful if velox
+    // grows those parameters. For now we drop them — BHJ degrades to a normal
+    // hash join (build + probe). joinHasNullKeys / opaqueSharedHashTable
+    // remain computed above for diagnostics / future re-enable.
     return std::make_shared<core::HashJoinNode>(
         nextPlanNodeId(),
         joinType,
@@ -438,9 +446,7 @@ core::PlanNodePtr SubstraitToVeloxPlanConverter::toVeloxPlan(const ::substrait::
         leftNode,
         rightNode,
         getJoinOutputType(leftNode, rightNode, joinType),
-        false,
-        joinHasNullKeys,
-        opaqueSharedHashTable);
+        false);
   } else {
     // Create HashJoinNode node
     return std::make_shared<core::HashJoinNode>(

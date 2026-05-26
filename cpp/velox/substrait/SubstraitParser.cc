@@ -22,7 +22,7 @@
 #include "VeloxSubstraitSignature.h"
 
 // Windows SDK defines BOOLEAN as a typedef for BYTE (winnt.h), which conflicts
-// with facebook::velox::BOOLEAN() function used below.
+// with ::facebook::velox::BOOLEAN_() function used below.
 #ifdef _WIN32
 #ifdef BOOLEAN
 #undef BOOLEAN
@@ -34,7 +34,7 @@ namespace gluten {
 TypePtr SubstraitParser::parseType(const ::substrait::Type& substraitType, bool asLowerCase) {
   switch (substraitType.kind_case()) {
     case ::substrait::Type::KindCase::kBool:
-      return facebook::velox::BOOLEAN();
+      return ::facebook::velox::BOOLEAN_();
     case ::substrait::Type::KindCase::kI8:
       return TINYINT();
     case ::substrait::Type::KindCase::kI16:

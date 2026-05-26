@@ -14,6 +14,7 @@ vcpkg_from_github(
         fix-unistd-include.patch
         fix-absolute-dir.patch
         adding-api.patch
+        windows-nominmax.patch
 )
 file(REMOVE "${SOURCE_PATH}/CMake/FindFastFloat.cmake")
 file(REMOVE "${SOURCE_PATH}/CMake/FindFmt.cmake")
@@ -30,6 +31,15 @@ file(REMOVE "${SOURCE_PATH}/build/fbcode_builder/CMake/FindSodium.cmake")
 file(REMOVE "${SOURCE_PATH}/build/fbcode_builder/CMake/FindZstd.cmake")
 
 string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" MSVC_USE_STATIC_RUNTIME)
+
+# Required by Velox on Linux/Clang/GCC. On MSVC the `__int128` keyword is
+# unavailable, so we disable folly's int128 code paths and rely on velox's
+# own Portability.h (absl::int128 shim) at link time.
+if(VCPKG_TARGET_IS_WINDOWS)
+    set(FOLLY_INT128_T_OPT "-DFOLLY_HAVE_INT128_T=OFF")
+else()
+    set(FOLLY_INT128_T_OPT "-DFOLLY_HAVE_INT128_T=ON")
+endif()
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
@@ -56,8 +66,7 @@ vcpkg_cmake_configure(
         -DVCPKG_LOCK_FIND_PACKAGE_Libiberty=OFF
         -DVCPKG_LOCK_FIND_PACKAGE_LibUnwind=${VCPKG_TARGET_IS_LINUX}
         -DVCPKG_LOCK_FIND_PACKAGE_ZLIB=ON
-        # Required by Velox.
-        -DFOLLY_HAVE_INT128_T=ON
+        ${FOLLY_INT128_T_OPT}
         -DFOLLY_MEMCPY_IS_MEMCPY=ON -DFOLLY_MEMSET_IS_MEMSET=ON
         ${FEATURE_OPTIONS}
     MAYBE_UNUSED_VARIABLES

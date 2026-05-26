@@ -1,10 +1,10 @@
-$jar1 = 'C:\Users\penggang\code\gluten\package\target\gluten-package-1.7.0-SNAPSHOT.jar'
-$jar2 = 'C:\Users\penggang\code\gluten\package\target\gluten-velox-bundle-spark3.5_2.12-windows_amd64-1.7.0-SNAPSHOT.jar'
-$newGluten = 'C:\Users\penggang\code\gluten\cpp\build\core\gluten.dll'
-$newVelox = 'C:\Users\penggang\code\gluten\cpp\build\velox\velox.dll'
-$javahome = 'C:\Program Files\Eclipse Adoptium\jdk-21.0.10.7-hotspot'
+$jar1 = 'C:\src\gluten\package\target\gluten-package-1.7.0-SNAPSHOT.jar'
+$jar2 = 'C:\src\gluten\package\target\gluten-velox-bundle-spark3.5_2.12-windows_amd64-1.7.0-SNAPSHOT.jar'
+$newGluten = 'C:\src\gluten\cpp\build\core\gluten.dll'
+$newVelox = 'C:\src\gluten\cpp\build\velox\velox.dll'
+$javahome = 'C:\Program Files\Java\jdk-11'
 $jarCmd = "$javahome\bin\jar.exe"
-$tmpDir = 'C:\Users\penggang\code\gluten\jar_tmp'
+$tmpDir = 'C:\tmp\jar_tmp'
 
 function Update-Jar {
     param($jarPath, $glutenPath, $veloxPath)
@@ -25,20 +25,16 @@ function Update-Jar {
         return
     }
 
-    # Update DLLs
-    if (Test-Path "$tmpDir\windows\amd64\gluten.dll") {
-        Copy-Item $glutenPath "$tmpDir\windows\amd64\gluten.dll" -Force
-        Write-Host "  Updated windows/amd64/gluten.dll"
+    # Add/replace DLLs (force add at standard gluten native lib paths)
+    $natDir = "$tmpDir\windows\amd64"
+    if (-not (Test-Path $natDir)) {
+        New-Item -ItemType Directory -Path $natDir -Force | Out-Null
     }
-    if (Test-Path "$tmpDir\windows\amd64\velox.dll") {
-        Copy-Item $veloxPath "$tmpDir\windows\amd64\velox.dll" -Force
-        Write-Host "  Updated windows/amd64/velox.dll"
-    }
-    if (Test-Path "$tmpDir\velox.dll") {
-        Copy-Item $veloxPath "$tmpDir\velox.dll" -Force
-        Write-Host "  Updated top-level velox.dll"
-    }
-
+    Copy-Item $glutenPath "$natDir\gluten.dll" -Force
+    Copy-Item $veloxPath "$natDir\velox.dll" -Force
+    Write-Host "  Wrote windows/amd64/gluten.dll + velox.dll"
+    Copy-Item $veloxPath "$tmpDir\velox.dll" -Force
+    Write-Host "  Wrote top-level velox.dll"
     # Repack the JAR
     $backupPath = $jarPath + ".bak"
     Copy-Item $jarPath $backupPath -Force

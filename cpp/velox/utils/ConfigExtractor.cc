@@ -239,7 +239,12 @@ std::shared_ptr<facebook::velox::config::ConfigBase> createHiveConnectorSessionC
       conf->get<bool>(kIgnoreMissingFiles, false) ? "true" : "false";
   configs[facebook::velox::connector::hive::HiveConfig::kParquetUseColumnNamesSession] =
       conf->get<bool>(kParquetUseColumnNames, true) ? "true" : "false";
-  configs[facebook::velox::connector::hive::HiveConfig::kAllowInt32NarrowingSession] =
+  // NOTE (Windows port, 2026-05): gang's velox windows/msvc-port snapshot
+  // doesn't yet expose HiveConfig::kAllowInt32NarrowingSession (upstream
+  // moved it into FileConfig in commit 01b86e20d). Use the literal session
+  // key string here; velox falls back to its built-in default if it doesn't
+  // consume this key on this version.
+  configs["allow_int32_narrowing"] =
       conf->get<bool>(kAllowInt32Narrowing, true) ? "true" : "false";
   configs[facebook::velox::connector::hive::HiveConfig::kOrcUseColumnNamesSession] =
       conf->get<bool>(kOrcUseColumnNames, true) ? "true" : "false";

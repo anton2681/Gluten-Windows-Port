@@ -236,6 +236,34 @@ target_link_libraries(gluten PUBLIC Arrow::arrow
                                     Arrow::arrow_bundled_dependencies)
 target_link_libraries(gluten PRIVATE google::glog)
 
+# Windows DLLs default to "nothing exported"; on Linux .so all symbols are
+# exported by default. Without this, downstream velox.dll cannot find symbols
+# like substrait::Type::* and gluten::splitPaths defined inside gluten.dll
+# (LNK2019 with non-__imp_ prefix). WINDOWS_EXPORT_ALL_SYMBOLS makes CMake
+# auto-generate a .def file exporting all linker-visible symbols, matching
+# the Linux behavior gluten was written against.
+if(WIN32)
+  set_target_properties(gluten PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
+# On Windows, Arrow's compression adapters (compression_zstd.cc etc.) call
+# the ZSTD / Snappy / LZ4 / zlib C APIs but arrow_bundled_dependencies.lib
+# doesn't include their object files — we have to link the vcpkg ones
+# explicitly. Also define ARROW_STATIC so Arrow headers stop emitting
+# __declspec(dllimport) decorations on functions that live in arrow_static.lib.
+if(WIN32)
+  find_package(zstd CONFIG REQUIRED)
+  find_package(Snappy CONFIG REQUIRED)
+  find_package(lz4 CONFIG REQUIRED)
+  find_package(ZLIB REQUIRED)
+  target_compile_definitions(gluten PUBLIC ARROW_STATIC PARQUET_STATIC)
+  target_link_libraries(gluten PRIVATE
+      $<IF:$<TARGET_EXISTS:zstd::libzstd_static>,zstd::libzstd_static,zstd::libzstd>
+      Snappy::snappy
+      $<IF:$<TARGET_EXISTS:lz4::lz4>,lz4::lz4,LZ4::lz4_static>
+      ZLIB::ZLIB)
+endif()
+
 install(TARGETS gluten DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/libhdfs.so
         DESTINATION ${LIBHDFS3_DESTINATION})

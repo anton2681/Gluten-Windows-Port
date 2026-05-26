@@ -16,6 +16,14 @@
 cmake_minimum_required(VERSION 3.16)
 message(STATUS "Building using CMake version: ${CMAKE_VERSION}")
 
+# vcpkg x64-windows-static triplet ships everything with /MT (static CRT).
+# gluten itself must match or libprotobuf/arrow/folly link with LNK2038
+# 'RuntimeLibrary' mismatch. CMP0091 must be NEW BEFORE project().
+if(WIN32)
+  cmake_policy(SET CMP0091 NEW)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -96,6 +104,14 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
     add_definitions(-DNDEBUG)
     message(STATUS "Add definition NDEBUG")
   endif()
+  # Windows macro hygiene — match velox's MSVC config so glog/folly/boost
+  # headers parse correctly:
+  #   GLOG_NO_ABBREVIATED_SEVERITIES — avoid clash with Win32 ERROR macro
+  #   NOMINMAX                       — avoid windows.h min/max macros
+  #   WIN32_LEAN_AND_MEAN            — shrink windows.h surface
+  #   NO_FIXED_STR_UDL               — disable folly FixedString _fs UDL (MSVC won't parse)
+  #   _USE_MATH_DEFINES              — make M_PI etc. available from <cmath>
+  add_definitions(-DGLOG_NO_ABBREVIATED_SEVERITIES -DNOMINMAX -DWIN32_LEAN_AND_MEAN -DNO_FIXED_STR_UDL -D_USE_MATH_DEFINES)
 else()
   if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -ggdb -O0")

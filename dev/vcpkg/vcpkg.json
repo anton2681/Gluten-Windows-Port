@@ -18,8 +18,11 @@
         "gflags",
         "glog",
         "snappy",
-        "libdwarf",
         "fmt",
+        {
+          "name": "libdwarf",
+          "platform": "!windows"
+        },
         {
           "name": "folly",
           "features": ["zstd", "lz4", "lzma", "snappy"]

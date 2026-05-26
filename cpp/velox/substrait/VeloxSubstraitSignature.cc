@@ -19,7 +19,7 @@
 #include "velox/functions/FunctionRegistry.h"
 
 // Windows SDK defines BOOLEAN as a typedef for BYTE (winnt.h), which conflicts
-// with facebook::velox::BOOLEAN() function used below.
+// with ::facebook::velox::BOOLEAN_() function used below.
 #ifdef _WIN32
 #ifdef BOOLEAN
 #undef BOOLEAN
@@ -124,7 +124,7 @@ index findSansNesting(std::string text, index from, char target, char left, char
 
 TypePtr VeloxSubstraitSignature::fromSubstraitSignature(const std::string& signature) {
   if (signature == "bool") {
-    return facebook::velox::BOOLEAN();
+    return ::facebook::velox::BOOLEAN_();
   }
 
   if (signature == "i8") {

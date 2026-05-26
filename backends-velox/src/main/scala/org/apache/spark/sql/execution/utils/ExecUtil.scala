@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Uns
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
@@ -69,7 +70,7 @@ object ExecUtil {
           }
           val (offset, length) =
             (info.offsets(rowId - baseLength), info.lengths(rowId - baseLength))
-          row.pointTo(null, info.memoryAddress + offset, length.toInt)
+          row.pointTo(info.data, Platform.BYTE_ARRAY_OFFSET + offset, length.toInt)
           rowId += 1
           row
         }

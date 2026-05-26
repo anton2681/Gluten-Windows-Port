@@ -23,7 +23,7 @@
 #include "velox/type/Timestamp.h"
 
 // Windows SDK defines BOOLEAN as a typedef for BYTE (winnt.h), which conflicts
-// with facebook::velox::BOOLEAN() function used below.
+// with ::facebook::velox::BOOLEAN_() function used below.
 #ifdef _WIN32
 #ifdef BOOLEAN
 #undef BOOLEAN
@@ -118,7 +118,7 @@ TypePtr getScalarType(const ::substrait::Expression::Literal& literal) {
   auto typeCase = literal.literal_type_case();
   switch (typeCase) {
     case ::substrait::Expression_Literal::LiteralTypeCase::kBoolean:
-      return facebook::velox::BOOLEAN();
+      return ::facebook::velox::BOOLEAN_();
     case ::substrait::Expression_Literal::LiteralTypeCase::kI8:
       return TINYINT();
     case ::substrait::Expression_Literal::LiteralTypeCase::kI16:
@@ -354,7 +354,7 @@ core::TypedExprPtr SubstraitVeloxExprConverter::toVeloxExpr(
   // First param is the value, second param is the list.
   params.emplace_back(toVeloxExpr(singularOrList.value(), inputType));
   params.emplace_back(literalsToConstantExpr(literals));
-  return std::make_shared<const core::CallTypedExpr>(facebook::velox::BOOLEAN(), std::move(params), "in");
+  return std::make_shared<const core::CallTypedExpr>(::facebook::velox::BOOLEAN_(), std::move(params), "in");
 }
 
 std::shared_ptr<const core::ConstantTypedExpr> SubstraitVeloxExprConverter::toVeloxExpr(
