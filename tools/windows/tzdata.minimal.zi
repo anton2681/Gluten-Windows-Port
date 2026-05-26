@@ -1,0 +1,8 @@
+# version 2026b
+# Minimal tzdata.zi for Windows: only UTC/GMT
+Zone	Etc/UTC	0	-	UTC
+Link	Etc/UTC	UTC
+Link	Etc/UTC	GMT
+Link	Etc/UTC	Etc/GMT
+Link	Etc/UTC	Etc/Universal
+Link	Etc/UTC	Etc/Zulu
