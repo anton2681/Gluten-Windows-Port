@@ -46,16 +46,17 @@ Plan operators all carry the `*Transformer` suffix → full Velox native offload
 | `arrow_cdata_jni.dll` interop | ✅ | Built separately, injected at `x86_64/` resource path |
 | Tzdb init with minimal UTC-only `tzdata.zi` | ✅ | At `C:\tools\velox-tzdata\` |
 | SELECT / GROUP BY / SUM / aggregations | ✅ | Offloaded to Velox |
-| Inner joins | ✅ | When `spark.sql.autoBroadcastJoinThreshold=-1` |
-| Left/Right outer joins (non-NULL keys) | ✅ | Same precondition |
+| Inner joins (SHJ) | ✅ | Default config |
+| Left/Right outer joins (non-NULL keys) | ✅ | Default config |
+| Broadcast hash join (non-NULL keys) | ✅ | Requires `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false` — see `tests/windows/run_test_bhj_narrow.bat` |
 
 ## What doesn't work ❌ (Known Limitations)
 
 | Limitation | Root cause | Workaround | Proper fix |
 |---|---|---|---|
 | Full IANA `tzdata.zi` crashes `velox::tzdb::time_zone::__create` | Bug in gangpeng's velox tzdb parser on Windows (specific Zone record triggers bad `unique_ptr`) | Use minimal UTC-only `tzdata.zi` + `spark.sql.session.timeZone=UTC` | Debug which Zone record triggers; fix tzdb parser |
-| Broadcast hash join returns empty results | `core::HashJoinNode` constructor was dropped from 12-arg → 10-arg signature (gangpeng's velox snapshot lacks the trailing reuse-hashtable args) | `spark.sql.autoBroadcastJoinThreshold=-1` to force shuffle hash join | Backport upstream 12-arg signature into gangpeng's velox |
-| Joins with NULL keys in key column crash | `protobuf::MessageLite::SerializeToArray` access violation in gluten substrait plan serialization | `WHERE key IS NOT NULL` before join | Find what proto field is uninitialized when NULL keys present |
+| Broadcast hash join returns empty results | Default `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=true` ships only the prebuilt hash table to executors. Our 10-arg `HashJoinNode` drops the reuse args, so velox can't recover the prebuilt table and the "fall back to building new table" path has no input rows | Set `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false` — gluten then rebuilds the hash table per task with the actual rows in scope. Verified by `tests/windows/run_test_bhj_narrow.bat` | Backport upstream 12-arg signature into gangpeng's velox and re-enable prebuilt-table reuse |
+| Joins with NULL keys in key column | NULL keys leave velox memory state in a way that produces bogus reservations (e.g. 459 GiB request); periodic stats poll previously deref'd `0xff...` inside `protobuf::SerializeToArray` and crashed the JVM | JVM crash fixed in `cpp/core/jni/JniWrapper.cc` (SEH guard around `ByteSizeLong` / `SerializeToArray` — stats degrade to empty blob instead of killing the process). Underlying OOM in left outer with NULL keys still fails the query — use `WHERE key IS NOT NULL` to dodge | Root-cause the velox NULL-key memory accounting (likely size_t underflow); alternative is to detect `joinHasNullKeys` in `SubstraitToVeloxPlan` SHJ path and `VELOX_NYI` so gluten falls back to vanilla Spark |
 | Non-UTC session timezones not supported | Linked to tzdata limitation above | Force UTC | Same as tzdata fix |
 | `arrow-dataset` JNI native lib (`arrow_dataset_jni.dll`) missing | We only built `arrow_cdata_jni.dll`; dataset JNI requires Arrow C++ runtime presence | Avoid `arrow.dataset.*` Java APIs | Build arrow_dataset_jni against Arrow C++ install |
 | `kAllowInt32NarrowingSession` config not honored | Constant absent in gangpeng's velox snapshot — we pass the literal string `"allow_int32_narrowing"` which velox silently ignores | Live with default narrowing behavior | Use new config name once velox upstream is merged |
@@ -176,8 +177,8 @@ These live OUTSIDE the repo and must be set up manually by users — see [SETUP.
 ### P0 — Bugs that must be fixed for production
 
 1. **Tzdb parser crash on full IANA tzdata** — debug `time_zone::__create` to find which Zone record triggers bad `unique_ptr`. Without this, non-UTC users can't use the build.
-2. **NULL key serialization crash** — `protobuf::MessageLite::SerializeToArray` access violation. Likely an uninitialized proto field in the LeftJoin/HashJoin substrait conversion path.
-3. **BHJ degraded to SHJ** — add upstream HashJoinNode 12-arg signature back into gangpeng's velox snapshot, then restore the `joinHasNullKeys` + `opaqueSharedHashTable` arguments.
+2. **NULL key memory blowup** — JVM-crash symptom mitigated (SEH guard in `cpp/core/jni/JniWrapper.cc::collectUsage`). Underlying issue is that NULL keys produce a 459 GiB bogus reservation in shuffle-read after the join — likely a `size_t` underflow in velox HashJoin or in columnar batch serialize. Track to the actual underflow site, or short-circuit via `VELOX_NYI` in `SubstraitToVeloxPlan` when `joinHasNullKeys`.
+3. **BHJ proper-fix** — current workaround is per-task rebuild via `buildHashTableOncePerExecutor=false`; the real fix is to backport upstream HashJoinNode 12-arg signature into gangpeng's velox snapshot, then restore the `joinHasNullKeys` + `opaqueSharedHashTable` arguments so the prebuilt table is actually reusable.
 
 ### P1 — Promote workarounds into proper patches
 

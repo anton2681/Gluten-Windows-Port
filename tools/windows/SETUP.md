@@ -184,7 +184,8 @@ If plan operators carry the `*Transformer` suffix, Gluten + Velox offload is wor
 | `tests/windows/run_test_gluten.bat` | Aggregations: SELECT/GROUP BY/SUM/ORDER BY |
 | `tests/windows/run_test_off.bat` | Sanity: plugin loads but offload disabled (vanilla Spark via our JARs) |
 | `tests/windows/run_test_join.bat` | Join validation: inner / left+null / BHJ |
-| `tests/windows/run_test_join_narrow.bat` | Joins with all-NOT-NULL keys (currently the only join shape that works) |
+| `tests/windows/run_test_join_narrow.bat` | Joins with all-NOT-NULL keys (currently the only join shape that works without BHJ) |
+| `tests/windows/run_test_bhj_narrow.bat` | Broadcast hash join with non-NULL keys (requires `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false`) |
 
 ---
 
@@ -199,6 +200,8 @@ If plan operators carry the `*Transformer` suffix, Gluten + Velox offload is wor
 | `error exporting columnar batch` / `FileNotFoundException: x86_64/arrow_cdata_jni.dll` | Did you run `inject_arrow_cdata.ps1` after building arrow_cdata_jni.dll? |
 | `linux/amd64/gluten.dll not found` | Bundle JAR doesn't have the DLLs injected. Re-run `update_jars.ps1` |
 | `EXCEPTION_ACCESS_VIOLATION` JVM crash in `velox.dll+0xXXXX` | See "Debug methodology" in [PORT_STATUS.md](../../PORT_STATUS.md) — use `llvm-symbolizer` against `velox.pdb` |
+| `BroadcastHashJoinExecTransformer` returns empty | Set `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false` — gluten then rebuilds the table per task instead of relying on the prebuilt-table-reuse path that gangpeng's velox doesn't expose |
+| Native crash in `gluten.dll!protobuf::SerializeToArray` during stats poll | Should not occur after the SEH-guard fix landed in `cpp/core/jni/JniWrapper.cc::collectUsage`; if it does, rebuild gluten.dll and re-inject via `update_jars.ps1` |
 
 ---
 

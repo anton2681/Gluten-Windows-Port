@@ -29,6 +29,9 @@
 #include <google/protobuf/stubs/common.h>
 #include <optional>
 #include <string>
+#ifdef _WIN32
+#include <excpt.h>
+#endif
 #include "memory/AllocationListener.h"
 #include "memory/SplitAwareColumnarBatchIterator.h"
 #include "operators/serializer/ColumnarBatchSerializer.h"
@@ -340,6 +343,45 @@ JNIEXPORT void JNICALL Java_org_apache_gluten_runtime_RuntimeJniWrapper_releaseR
 
 namespace {
 const std::string kBacktraceAllocation = "spark.gluten.memory.backtrace.allocation";
+
+#ifdef _WIN32
+// SEH-guarded serialize. Lives in its own function so structured exception
+// handling doesn't collide with C++ stack unwinding (MSVC forbids mixing
+// __try/__except with code that has C++ destructors).
+//
+// Why: on the Windows port, certain operator paths (notably HashJoin with
+// NULL keys) leave a MemoryPool's internal state in a way that corrupts the
+// MemoryUsageStats tree we build for periodic stats polling. The downstream
+// protobuf ByteSizeLong / SerializeToArray then dereferences -1 and takes
+// the JVM down with an EXCEPTION_ACCESS_VIOLATION. Catching the AV here
+// degrades monitoring to a no-op but keeps queries running. Tracked as
+// Bug #3 in PORT_STATUS.md.
+int safeByteSizeLong(const ::google::protobuf::MessageLite* msg, size_t* outSize) {
+  __try {
+    *outSize = msg->ByteSizeLong();
+    return 1;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return -1;
+  }
+}
+
+int safeSerializeToArray(const ::google::protobuf::MessageLite* msg, void* buf, int size) {
+  __try {
+    return msg->SerializeToArray(buf, size) ? 1 : 0;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return -1;
+  }
+}
+#else
+int safeByteSizeLong(const ::google::protobuf::MessageLite* msg, size_t* outSize) {
+  *outSize = msg->ByteSizeLong();
+  return 1;
+}
+
+int safeSerializeToArray(const ::google::protobuf::MessageLite* msg, void* buf, int size) {
+  return msg->SerializeToArray(buf, size) ? 1 : 0;
+}
+#endif
 }
 
 JNIEXPORT jlong JNICALL Java_org_apache_gluten_memory_NativeMemoryManagerJniWrapper_create( // NOLINT
@@ -373,13 +415,23 @@ JNIEXPORT jbyteArray JNICALL Java_org_apache_gluten_memory_NativeMemoryManagerJn
   JNI_METHOD_START
   auto* memoryManager = jniCastOrThrow<MemoryManager>(nmmHandle);
 
-  const MemoryUsageStats& stats = memoryManager->collectMemoryUsageStats();
-  auto size = stats.ByteSizeLong();
-  jbyteArray out = env->NewByteArray(size);
+  MemoryUsageStats stats;
+  try {
+    stats = memoryManager->collectMemoryUsageStats();
+  } catch (...) {
+    // Treat as empty stats — see safeSerializeToArray comment.
+    return env->NewByteArray(0);
+  }
+  size_t size = 0;
+  if (safeByteSizeLong(&stats, &size) <= 0) {
+    return env->NewByteArray(0);
+  }
   std::vector<uint8_t> buffer(size);
-  GLUTEN_CHECK(
-      stats.SerializeToArray(reinterpret_cast<void*>(buffer.data()), size),
-      "Serialization failed when collecting memory usage stats");
+  int rc = safeSerializeToArray(&stats, buffer.data(), static_cast<int>(size));
+  if (rc <= 0) {
+    return env->NewByteArray(0);
+  }
+  jbyteArray out = env->NewByteArray(size);
   env->SetByteArrayRegion(out, 0, size, reinterpret_cast<jbyte*>(buffer.data()));
   return out;
   JNI_METHOD_END(nullptr)
