@@ -123,6 +123,19 @@ readUncompressedBuffer(arrow::io::InputStream* inputStream, arrow::MemoryPool* p
   if (bufferLength == kNullBuffer) {
     return nullptr;
   }
+  // Defensive check: an uncompressed buffer's header should be a non-negative
+  // length (or kNullBuffer == -1, handled above). On the Windows port we have
+  // seen NULL-key joins produce serialized shuffle data with negative bogus
+  // lengths (e.g. -92), almost certainly from a write-side size_t underflow.
+  // Without this guard the failure bubbles up as `Negative buffer resize: -92`
+  // from deep inside Arrow's PoolBuffer::Resize, which gives no clue where the
+  // bad header came from. Bug #3b in PORT_STATUS.md.
+  if (bufferLength < 0) {
+    return arrow::Status::Invalid(
+        "Bogus uncompressed shuffle buffer length ",
+        bufferLength,
+        " (expected non-negative or kNullBuffer=-1). Stream is likely corrupted upstream.");
+  }
   ARROW_ASSIGN_OR_RAISE(auto buffer, arrow::AllocateResizableBuffer(bufferLength, pool));
   RETURN_NOT_OK(inputStream->Read(bufferLength, buffer->mutable_data()));
   return buffer;
@@ -146,6 +159,21 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> readCompressedBuffer(
 
   int64_t uncompressedLength;
   RETURN_NOT_OK(inputStream->Read(sizeof(int64_t), &uncompressedLength));
+  // Defensive checks — see readUncompressedBuffer comment. kNullBuffer (-1)
+  // and kZeroLengthBuffer (0) are handled above; kUncompressedBuffer (-2) is
+  // a valid signal for the compressedLength field only and is handled below.
+  if (compressedLength != kUncompressedBuffer && compressedLength < 0) {
+    return arrow::Status::Invalid(
+        "Bogus compressed shuffle buffer length ",
+        compressedLength,
+        " (expected non-negative, kNullBuffer=-1, kZeroLengthBuffer=0 or kUncompressedBuffer=-2). Stream is likely corrupted upstream.");
+  }
+  if (uncompressedLength < 0) {
+    return arrow::Status::Invalid(
+        "Bogus uncompressed shuffle buffer length ",
+        uncompressedLength,
+        " in compressed stream. Stream is likely corrupted upstream.");
+  }
   if (compressedLength == kUncompressedBuffer) {
     ARROW_ASSIGN_OR_RAISE(auto uncompressed, arrow::AllocateResizableBuffer(uncompressedLength, pool));
     RETURN_NOT_OK(inputStream->Read(uncompressedLength, uncompressed->mutable_data()));

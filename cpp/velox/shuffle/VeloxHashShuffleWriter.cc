@@ -1278,6 +1278,17 @@ arrow::Status VeloxHashShuffleWriter::shrinkPartitionBuffer(uint32_t partitionId
 }
 
 uint64_t VeloxHashShuffleWriter::valueBufferSizeForBinaryArray(uint32_t binaryIdx, uint32_t newSize) {
+  // Defensive: when this is called from the initial partition allocation path,
+  // totalInputNumRows_ can be 0 and binaryArrayTotalSizeBytes_[binaryIdx] is 0
+  // too. The original expression then computes `(0 + 0 - 1) / 0 * newSize`,
+  // which underflows uint64_t and divides by zero. On Windows / MSVC this is
+  // undefined behavior and has been observed to produce bogus buffer sizes
+  // that propagate into the serialized shuffle stream (Bug #3b). When we have
+  // no prior row stats, fall back to a 1024 KiB-per-newSize estimate plus a
+  // 1024 byte slack — matches the existing `+ 1024` slack in the normal path.
+  if (totalInputNumRows_ == 0) {
+    return static_cast<uint64_t>(newSize) * 1024 + 1024;
+  }
   return (binaryArrayTotalSizeBytes_[binaryIdx] + totalInputNumRows_ - 1) / totalInputNumRows_ * newSize + 1024;
 }
 
