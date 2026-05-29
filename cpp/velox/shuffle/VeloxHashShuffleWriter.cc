@@ -650,8 +650,20 @@ arrow::Status VeloxHashShuffleWriter::splitBinaryType(
     for (auto i = 0; i < numRows; i++) {
       auto rowId = rowOffset2RowId_[rowOffsetBase + i];
       auto& stringView = srcRawValues[rowId];
-      size_t isNull = srcRawNulls && facebook::velox::bits::isBitNull(srcRawNulls, rowId);
-      auto stringLen = (isNull - 1) & stringView.size();
+      // NULL handling: for a NULL row, stringView slot may hold garbage size
+      // (e.g. uninitialized memory). Original code used a branchless mask
+      // `(isNull - 1) & stringView.size()` that relies on size_t underflow to
+      // produce an all-ones mask. On the Windows port (Bug #3b in
+      // PORT_STATUS.md) we observed this writing garbage bufferLength values
+      // (e.g. 316 GiB) into the shuffle stream when NULL keys were present
+      // — likely a MSVC code-gen quirk on the underflow. Explicit if/else
+      // here is unambiguous and side-steps the issue.
+      size_t stringLen;
+      if (srcRawNulls && facebook::velox::bits::isBitNull(srcRawNulls, rowId)) {
+        stringLen = 0;
+      } else {
+        stringLen = stringView.size();
+      }
 
       // 1. copy length, update offset.
       dstLengthBase[i] = stringLen;
@@ -851,8 +863,14 @@ uint32_t VeloxHashShuffleWriter::calculatePartitionBufferSize(const facebook::ve
 
     for (auto idx = 0; idx < numRows; idx++) {
       auto& stringView = srcRawValues[idx];
-      size_t isNull = srcRawNulls && facebook::velox::bits::isBitNull(srcRawNulls, idx);
-      auto stringLen = (isNull - 1) & stringView.size();
+      // Explicit NULL handling — same MSVC underflow risk as the
+      // branchless mask removed in splitBinaryType. See Bug #3b note there.
+      size_t stringLen;
+      if (srcRawNulls && facebook::velox::bits::isBitNull(srcRawNulls, idx)) {
+        stringLen = 0;
+      } else {
+        stringLen = stringView.size();
+      }
       binarySizeBytes += stringLen;
     }
 

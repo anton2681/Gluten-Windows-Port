@@ -118,23 +118,30 @@ arrow::Status compressAndFlush(
 arrow::Result<std::shared_ptr<arrow::Buffer>>
 readUncompressedBuffer(arrow::io::InputStream* inputStream, arrow::MemoryPool* pool, int64_t& deserializedTime) {
   ScopedTimer timer(&deserializedTime);
-  int64_t bufferLength;
-  RETURN_NOT_OK(inputStream->Read(sizeof(int64_t), &bufferLength));
+  int64_t bufferLength = 0;
+  // Defensive: explicit initialization in case Read() returns fewer than 8
+  // bytes (end of stream) and leaves the high bytes of bufferLength holding
+  // stack garbage — a likely cause of the bogus huge values we observed when
+  // NULL-key joins shrink a partition's serialized payload. Verify the byte
+  // count too. Bug #3b in PORT_STATUS.md.
+  ARROW_ASSIGN_OR_RAISE(auto bytesRead, inputStream->Read(sizeof(int64_t), &bufferLength));
+  if (bytesRead != sizeof(int64_t)) {
+    return arrow::Status::IOError(
+        "Short read while reading uncompressed buffer length: got ",
+        bytesRead,
+        " bytes, expected 8. Stream likely truncated upstream.");
+  }
   if (bufferLength == kNullBuffer) {
     return nullptr;
   }
-  // Defensive check: an uncompressed buffer's header should be a non-negative
-  // length (or kNullBuffer == -1, handled above). On the Windows port we have
-  // seen NULL-key joins produce serialized shuffle data with negative bogus
-  // lengths (e.g. -92), almost certainly from a write-side size_t underflow.
-  // Without this guard the failure bubbles up as `Negative buffer resize: -92`
-  // from deep inside Arrow's PoolBuffer::Resize, which gives no clue where the
-  // bad header came from. Bug #3b in PORT_STATUS.md.
-  if (bufferLength < 0) {
+  // 16 GiB is a generous upper bound — a real columnar shuffle buffer for one
+  // partition of one column will never legitimately exceed it.
+  static constexpr int64_t kPlausibleMaxBufferBytes = 16LL * 1024LL * 1024LL * 1024LL;
+  if (bufferLength < 0 || bufferLength > kPlausibleMaxBufferBytes) {
     return arrow::Status::Invalid(
         "Bogus uncompressed shuffle buffer length ",
         bufferLength,
-        " (expected non-negative or kNullBuffer=-1). Stream is likely corrupted upstream.");
+        " (expected 0..16 GiB or kNullBuffer=-1). Stream is likely corrupted upstream.");
   }
   ARROW_ASSIGN_OR_RAISE(auto buffer, arrow::AllocateResizableBuffer(bufferLength, pool));
   RETURN_NOT_OK(inputStream->Read(bufferLength, buffer->mutable_data()));
@@ -162,13 +169,15 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> readCompressedBuffer(
   // Defensive checks — see readUncompressedBuffer comment. kNullBuffer (-1)
   // and kZeroLengthBuffer (0) are handled above; kUncompressedBuffer (-2) is
   // a valid signal for the compressedLength field only and is handled below.
-  if (compressedLength != kUncompressedBuffer && compressedLength < 0) {
+  static constexpr int64_t kPlausibleMaxBufferBytes = 16LL * 1024LL * 1024LL * 1024LL;
+  if (compressedLength != kUncompressedBuffer &&
+      (compressedLength < 0 || compressedLength > kPlausibleMaxBufferBytes)) {
     return arrow::Status::Invalid(
         "Bogus compressed shuffle buffer length ",
         compressedLength,
-        " (expected non-negative, kNullBuffer=-1, kZeroLengthBuffer=0 or kUncompressedBuffer=-2). Stream is likely corrupted upstream.");
+        " (expected 0..16 GiB, kNullBuffer=-1, kZeroLengthBuffer=0 or kUncompressedBuffer=-2). Stream is likely corrupted upstream.");
   }
-  if (uncompressedLength < 0) {
+  if (uncompressedLength < 0 || uncompressedLength > kPlausibleMaxBufferBytes) {
     return arrow::Status::Invalid(
         "Bogus uncompressed shuffle buffer length ",
         uncompressedLength,
@@ -252,22 +261,52 @@ arrow::Result<std::unique_ptr<BlockPayload>> BlockPayload::fromBuffers(
 }
 
 arrow::Status BlockPayload::serialize(arrow::io::OutputStream* outputStream) {
+  // Sanity bound — see readUncompressedBuffer. Detect bogus sizes at write
+  // time so we know which buffer is bad, rather than letting the reader
+  // surface a confusing "Bogus shuffle buffer length N" error from a
+  // partition far away in time and space. Bug #3b in PORT_STATUS.md.
+  static constexpr int64_t kPlausibleMaxBufferBytes = 16LL * 1024LL * 1024LL * 1024LL;
   switch (type_) {
     case Type::kUncompressed: {
       ScopedTimer timer(&writeTime_);
+      // Verify counts match before writing the header — a mismatch means
+      // numBuffers_ stored in the header will not equal the number of buffer
+      // entries actually written, and the reader will run off the end.
+      if (buffers_.size() != static_cast<size_t>(numBuffers_)) {
+        return arrow::Status::Invalid(
+            "BlockPayload header/body buffer count mismatch: numBuffers_=",
+            numBuffers_,
+            " but buffers_.size()=",
+            buffers_.size());
+      }
       RETURN_NOT_OK(outputStream->Write(&kUncompressedType, sizeof(Type)));
       RETURN_NOT_OK(outputStream->Write(&numRows_, sizeof(uint32_t)));
       RETURN_NOT_OK(outputStream->Write(&numBuffers_, sizeof(uint32_t)));
+      uint32_t bufferIdx = 0;
       for (auto& buffer : buffers_) {
         if (!buffer) {
           RETURN_NOT_OK(outputStream->Write(&kNullBuffer, sizeof(int64_t)));
+          ++bufferIdx;
           continue;
         }
         int64_t bufferSize = buffer->size();
+        if (bufferSize < 0 || bufferSize > kPlausibleMaxBufferBytes) {
+          return arrow::Status::Invalid(
+              "Bogus buffer size at write time: numRows=",
+              numRows_,
+              " numBuffers=",
+              numBuffers_,
+              " bufferIdx=",
+              bufferIdx,
+              " bufferSize=",
+              bufferSize,
+              " (expected 0..16 GiB). Upstream shuffle writer produced a corrupted buffer.");
+        }
         RETURN_NOT_OK(outputStream->Write(&bufferSize, sizeof(int64_t)));
         if (bufferSize > 0) {
           RETURN_NOT_OK(outputStream->Write(std::move(buffer)));
         }
+        ++bufferIdx;
       }
     } break;
     case Type::kToBeCompressed: {
@@ -333,14 +372,25 @@ arrow::Result<std::vector<std::shared_ptr<arrow::Buffer>>> BlockPayload::deseria
   bool isCompressionEnabled = type == Type::kCompressed;
   std::vector<std::shared_ptr<arrow::Buffer>> buffers;
   buffers.reserve(numBuffers);
-  for (auto i = 0; i < numBuffers; ++i) {
+  for (uint32_t i = 0; i < numBuffers; ++i) {
     buffers.emplace_back();
-    if (isCompressionEnabled) {
-      ARROW_ASSIGN_OR_RAISE(
-          buffers.back(), readCompressedBuffer(inputStream, codec, pool, deserializeTime, decompressTime));
-    } else {
-      ARROW_ASSIGN_OR_RAISE(buffers.back(), readUncompressedBuffer(inputStream, pool, deserializeTime));
+    arrow::Result<std::shared_ptr<arrow::Buffer>> result =
+        isCompressionEnabled ? readCompressedBuffer(inputStream, codec, pool, deserializeTime, decompressTime)
+                             : readUncompressedBuffer(inputStream, pool, deserializeTime);
+    if (!result.ok()) {
+      return arrow::Status::Invalid(
+          "Failed reading buffer ",
+          i,
+          "/",
+          numBuffers,
+          " (type=",
+          (isCompressionEnabled ? "compressed" : "uncompressed"),
+          ", numRows=",
+          numRows,
+          "): ",
+          result.status().ToString());
     }
+    buffers.back() = *std::move(result);
   }
   return buffers;
 }
