@@ -1,164 +1,173 @@
-# Gluten on Windows — MSVC Port (In Progress)
+<img src="docs/image/gluten-logo.svg" alt="Gluten" width="200">
 
-This is a **fork of [Apache Gluten](https://github.com/apache/incubator-gluten)** that brings the Gluten + [Velox](https://github.com/facebookincubator/velox) Spark execution stack to **Windows / MSVC**. It is not yet at parity with the Linux build — see [Current state](#current-state) and [Open issues](#open-issues-handover-notes) below.
+> **Windows / MSVC port note** — this is a fork carrying in-progress Windows support on top of upstream Apache Gluten. For build steps, current state, what's changed, and open issues, see [`WINDOWS_PORT.md`](WINDOWS_PORT.md). The original Apache Gluten README follows below, unchanged.
 
-Companion Velox fork: **[anton2681/Velox-Windows-Port](https://github.com/anton2681/Velox-Windows-Port)** (Gluten depends on a specific Velox snapshot; that repo carries gangpeng's MSVC port commit unchanged).
+# Apache Gluten
 
-Upstream sources this fork is based on:
-- Apache Gluten `main` (Apache 2.0)
-- [gangpeng/gluten](https://github.com/gangpeng/gluten) MSVC port snapshot (Apache 2.0) — adds the initial Windows build wiring
-- [gangpeng/velox](https://github.com/gangpeng/velox) `windows/msvc-port` branch (Apache 2.0) — adds MSVC-compatible Velox
+**A Middle Layer for Offloading JVM-based SQL Engines' Execution to Native Engines**
 
-For the **original Apache Gluten README** (what the project is, supported backends, general docs), see [`README.upstream.md`](README.upstream.md) or the [upstream repo](https://github.com/apache/incubator-gluten).
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/8452/badge)](https://www.bestpractices.dev/projects/8452)
 
----
+## 1. Introduction
 
-## Current state
+### Background
 
-End-to-end Spark 3.5.3 + Velox offload works on Windows for basic workloads via `spark-submit`. Detailed status with reproduction commands and exact error messages lives in [`PORT_STATUS.md`](PORT_STATUS.md).
+Apache Spark is a mature and stable project that has been under continuous development for many years. It is one of the most widely used frameworks for scaling out the processing of petabyte-scale datasets.
+Over time, the Spark community has had to address significant performance challenges, which required a variety of optimizations. A major milestone came with Spark 2.0, where Whole-Stage Code Generation
+replaced the Volcano Model, delivering up to a 2× speedup. Since then, most subsequent improvements have focused on the query plan level, while the performance of individual operators has almost stopped improving.
 
-| | |
-|---|---|
-| `SELECT` / `GROUP BY` / `SUM` / ordering / aggregations | OK — offloaded to Velox |
-| Inner join (SHJ) | OK — default config |
-| Left / Right outer join, non-NULL keys | OK — default config |
-| Broadcast hash join, non-NULL keys | OK — requires `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false` |
-| Joins with NULL keys in the key column | FAIL — workaround: `WHERE key IS NOT NULL` before the join |
-| Full IANA `tzdata.zi` (non-UTC sessions) | FAIL — workaround: minimal UTC-only `tzdata.zi` shipped at `tools/windows/tzdata.minimal.zi` |
-| Arrow dataset JNI (`arrow_dataset_jni.dll`) | Skipped — only `arrow_cdata_jni.dll` is built |
-| `backends-velox` Scala unit tests | `src/test` renamed to `src/test.bak` to unblock packaging |
+<p align="center">
+<img src="https://user-images.githubusercontent.com/47296334/199853029-b6d0ea19-f8e4-4f62-9562-2838f7f159a7.png" width="700">
+</p>
 
-See the full per-feature table in `PORT_STATUS.md` for root causes and proper-fix suggestions.
+In recent years, several native SQL engines have been developed, such as ClickHouse and Velox. With features like native execution, columnar data formats, and vectorized
+data processing, these engines can outperform Spark’s JVM-based SQL engine. However, they currently don't directly support Spark SQL execution.
 
----
+### Design Overview
 
-## Build & smoke test
+“Gluten” is Latin for "glue". The main goal of the Gluten project is to glue native engines to Spark SQL. Thus, we can benefit from the high performance of native engines and the high scalability enabled by the Spark ecosystem.
 
-Step-by-step build instructions: [`tools/windows/SETUP.md`](tools/windows/SETUP.md).
+The basic design principle is to reuse Spark’s control flow, while offloading compute-intensive data processing to the native side. More specifically:
 
-TL;DR pipeline (each step assumes the previous succeeded):
+* Transform Spark’s physical plan to Substrait plan, then transform it to native engine's plan.
+* Offload performance-critical data processing to native engine.
+* Define clear JNI interfaces for native SQL engines.
+* Allow easy switching between available native backends.
+* Reuse Spark’s distributed control flow.
+* Manage data sharing between JVM and native.
+* Provide extensibility to support more native engines.
 
-1. Install Visual Studio 2022 + JDK 11 + Maven + Python 3 + Git Bash + (optional) LLVM
-2. `dev/vcpkg/.vcpkg/vcpkg install --triplet x64-windows-static --x-manifest-root=.` (~2–3 hours first time)
-3. `ep/build-velox/build-velox-windows.ps1 -BuildType Release` (~2 hours)
-4. `build-gluten-windows.ps1` (~10 min, produces `gluten.dll` + `velox.dll`)
-5. Build `arrow_cdata_jni.dll` via `tools/windows/build_arrow_cdata.bat`
-6. `mvn package -P backends-velox,spark-3.5 -DskipTests …` (~5 min)
-7. Inject DLLs into the bundle JAR: `update_jars.ps1` + `tools/windows/inject_arrow_cdata.ps1`
-8. Run a smoke test: `tests/windows/run_test_gluten.bat`
+### Target Users
 
-Repo layout expected:
-```
-C:\src\
-├── gluten\   (this repo, anton2681/Gluten-Windows-Port)
-└── velox\    (anton2681/Velox-Windows-Port)
-```
-plus a junction `gluten\ep\build-velox\build\velox_ep` → `C:\src\velox`.
+Gluten's target users include anyone who wants to fundamentally accelerate Spark SQL. As a plugin to Spark, Gluten requires no changes to the DataFrame API or SQL queries; users only need to configure it correctly.
 
-Smoke tests under [`tests/windows/`](tests/windows/):
+## 2. Architecture
 
-| Test | What it exercises |
-|---|---|
-| `run_test_gluten.bat` | SELECT / GROUP BY / SUM / ORDER BY — offloaded to Velox |
-| `run_test_off.bat` | Plugin loads but offload disabled — sanity for vanilla Spark via our JARs |
-| `run_test_join.bat` | Inner / LEFT (with NULL keys, currently fails on T2) / BHJ |
-| `run_test_join_narrow.bat` | Joins with all-NOT-NULL keys — passes today |
-| `run_test_bhj_narrow.bat` | Broadcast hash join with non-NULL keys (needs the `buildHashTableOncePerExecutor=false` config) |
-| `run_test_join_sortshuffle.bat` | NULL-key LEFT JOIN routed through sort-based shuffle (still fails, different symptom) |
-| `run_test_join_nospill.bat` | NULL-key LEFT JOIN with velox spill disabled (still fails) |
+The overview chart is shown below. [Substrait](https://substrait.io/) provides a well-defined, cross-language specification for data compute operations. Spark’s physical plan is transformed into a Substrait plan,
+which is then passed to the native side through a JNI call. On the native side, a chain of native operators is constructed and offloaded to the native engine. Gluten returns the results as a ColumnarBatch,
+and Spark’s Columnar API (introduced in Spark 3.0) is used during execution. Gluten adopts the Apache Arrow data format as its underlying representation.
+<p align="center">
+<img src="https://user-images.githubusercontent.com/47296334/199617207-1140698a-4d53-462d-9bc7-303d14be060b.png" width="700">
+</p>
+Currently, Gluten supports only ClickHouse and Velox backends. Velox is a C++ database acceleration library which provides reusable, extensible and high-performance data processing components. In addition, Gluten is designed to be extensible,
+allowing support for additional backends in the future.
 
----
+Gluten's key components:
+* **Query Plan Conversion**: Converts Spark's physical plan to Substrait plan.
+* **Unified Memory Management**: Manages native memory allocation.
+* **Columnar Shuffle**: Handles shuffling of Gluten's columnar data. The shuffle service of Spark core is reused, while a columnar exchange operator is implemented to support Gluten's columnar data format.
+* **Fallback Mechanism**: Provides fallback to vanilla Spark for unsupported operators. Gluten's ColumnarToRow (C2R) and RowToColumnar (R2C) convert data between Gluten's columnar format and Spark's internal row format to support fallback transitions.
+* **Metrics**: Collected from Gluten native engine to help monitor execution, identify bugs, and diagnose performance bottlenecks. The metrics are displayed in Spark UI.
+* **Shim Layer**: Ensures compatibility with multiple Spark versions. Gluten supports the latest 3–4 Spark releases during its development cycle, and currently supports Spark 3.3, 3.4, 3.5, 4.0, and 4.1.
 
-## What was changed vs upstream
+## 3. User Guide
 
-Two layers of changes:
-
-1. **Bring-up changes from gangpeng's MSVC port** that already landed before this fork was created (commits `2fcfd4acf`, `78acdd906`). These touch vcpkg manifests, build scripts, dependency portfiles (folly `__int128`, libelf/libdwarf skips, folly `/std:c++17` interface leak, monolithic `velox.lib` 4 GB cap, etc.). Detailed inventory in `PORT_STATUS.md` under "Velox MSVC port changes".
-
-2. **Changes made during the spark-submit bring-up and bug-fix work** (commits `40b657996` → `bb2a06df3`):
-
-| Commit | Subject | What it does |
-|---|---|---|
-| `40b657996` | Complete spark-submit end-to-end on Windows | Adds Windows platform case in `VeloxListenerApi.platformLibDir`, fixes 3 `NativeColumnarToRowInfo` call sites to use `info.data + Platform.BYTE_ARRAY_OFFSET` instead of the missing `memoryAddress` field, wires `hadoop-client` / `spark-hive` / `caffeine` / `jimfs` into `backends-velox/pom.xml`, adds explicit `substrait/arrow/core/ui` deps to `package/pom.xml`, etc. |
-| `5b1d7d5b1` | Windows-port tools, smoke tests, setup guide, early report | Adds `tools/windows/` (build helpers, arrow_cdata_jni standalone CMake, JAR-injection PowerShell scripts, minimal tzdata.zi, JVM crash-dump wrapper) and `tests/windows/` smoke tests, plus `PORT_STATUS.md` + `tools/windows/SETUP.md`. |
-| `85150d718` | Fix JVM crash on join-stats poll; document BHJ config workaround | **Bug #3a**: SEH (`__try`/`__except`) guard around `MemoryUsageStats::ByteSizeLong` / `SerializeToArray` in `cpp/core/jni/JniWrapper.cc::collectUsage`. NULL-key joins were leaving the MemoryUsageStats tree in a state that made protobuf dereference `0xff…ff` from the periodic stats poll, taking the JVM down. SEH guard makes stats degrade to empty blob instead of crashing the process. **Bug #2**: documents that `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false` unblocks BHJ on this port (default `true` ships only the prebuilt hash table, which the 10-arg HashJoinNode signature in gangpeng's velox cannot reuse). |
-| `94539b6c2` | Fix uint64 underflow + div-by-zero in shuffle binary buffer sizing | **Bug #3b first layer**: `VeloxHashShuffleWriter.cc::valueBufferSizeForBinaryArray` computed `(totalBytes + numRows - 1) / numRows * newSize + 1024` — underflows + divide-by-zero when `totalInputNumRows_==0`. On Linux that's harmless UB; on MSVC it was emitting garbage that ended up serialized into the shuffle stream as a negative buffer header (`-92`), surfacing later as `Negative buffer resize: -92` from Arrow's `PoolBuffer::Resize`. Also adds defensive sanity checks (16 GiB upper bound, negative-length rejection) on the read side in `cpp/core/shuffle/Payload.cc`. |
-| `bb2a06df3` | Bug #3b deep dive: shuffle stream truncation, diagnostic hardening | **Bug #3b second layer**: replaces two MSVC-fragile `(isNull - 1) & stringView.size()` branchless null masks in `VeloxHashShuffleWriter.cc` with explicit `if`/`else`. Hardens `BlockPayload::serialize` with `numBuffers_ == buffers_.size()` assertion + per-buffer-index diagnostic. Hardens `BlockPayload::deserialize` with init-before-Read, short-read detection, upper-bound check, per-buffer diagnostic. Result: the NULL-key LEFT JOIN failure now surfaces as the clean message `Failed reading buffer 5/7 (type=uncompressed, numRows=1): Short read got 0 bytes` instead of bogus 200-700 GiB OOM. Underlying truncation not yet root-caused. |
-
-Files outside the upstream code base added in this fork:
+Below is a basic configuration to enable Gluten in Spark.
 
 ```
-PORT_STATUS.md                       # full status table, debug methodology, follow-ups
-tools/windows/SETUP.md               # step-by-step build guide
-tools/windows/build_arrow_cdata.bat
-tools/windows/build_velox_dll.bat
-tools/windows/inject_arrow_cdata.ps1
-tools/windows/arrow_cdata_jni/CMakeLists.txt
-tools/windows/jvm_crash_dump.bat
-tools/windows/tzdata.minimal.zi
-tests/windows/run_test_*.bat         # smoke tests
-tests/windows/test_*.py
-update_jars.ps1                      # injects gluten.dll + velox.dll into the bundle JAR
-build-gluten-windows.ps1             # gluten DLL build orchestrator
-ep/build-velox/build-velox-windows.ps1  # velox build orchestrator
+export GLUTEN_JAR=/PATH/TO/GLUTEN_JAR
+spark-shell \
+  --master yarn --deploy-mode client \
+  --conf spark.plugins=org.apache.gluten.GlutenPlugin \
+  --conf spark.memory.offHeap.enabled=true \
+  --conf spark.memory.offHeap.size=20g \
+  --conf spark.driver.extraClassPath=${GLUTEN_JAR} \
+  --conf spark.executor.extraClassPath=${GLUTEN_JAR} \
+  --conf spark.shuffle.manager=org.apache.spark.shuffle.sort.ColumnarShuffleManager
+  ...
 ```
 
----
+There are two ways to acquire Gluten jar for the above configuration.
 
-## Open issues (handover notes)
+### Use Released JAR
 
-These are the items left when this fork was last touched. Each one is also annotated in the relevant source file with a `Bug #3b in PORT_STATUS.md`-style pointer.
+Please download the tar package [here](https://gluten.apache.org/downloads/), then extract Gluten JAR from it.
+Additionally, Gluten provides nightly builds based on the main branch for early testing. The nightly build JARs are available at [Apache Gluten Nightlies](https://nightlies.apache.org/gluten/).
+They have been verified on Centos 7/8/9, Ubuntu 20.04/22.04.
 
-### Bug #3b — NULL-key LEFT JOIN produces a truncated shuffle stream
+### Build From Source
 
-**Reproducer**: `tests/windows/run_test_join.bat` — T1 inner join passes, T2 LEFT JOIN with NULL keys fails with:
+For **Velox** backend, please refer to [Velox.md](./docs/get-started/Velox.md) and [build-guide.md](./docs/get-started/build-guide.md).
 
-```
-Failed reading buffer 5/7 (type=uncompressed, numRows=1):
-  IOError: Short read while reading uncompressed buffer length:
-  got 0 bytes, expected 8. Stream likely truncated upstream.
-```
+For **ClickHouse** backend, please refer to [ClickHouse.md](./docs/get-started/ClickHouse.md).
 
-**What we know**:
-- Failure is NULL-key-specific (`run_test_join_narrow.bat` with no NULL keys passes cleanly).
-- Header says `numBuffers=7`, stream physically contains only 5 buffers worth of data.
-- Write-time assertion `numBuffers_ == buffers_.size()` doesn't fire, so the BlockPayload's bookkeeping is internally consistent at serialize time. The truncation must happen either inside `outputStream->Write(buffer)` (silent partial write) or in a NULL-key-specific code path that mutates the buffer count between header write and buffer iteration.
-- Switching to sort-based shuffle (`run_test_join_sortshuffle.bat`) hits a different symptom (`LZ4 ERROR_frameType_unknown`) — same root cause, different decode path.
-- Disabling velox spill (`run_test_join_nospill.bat`) does not avoid it.
+The Gluten JAR will be generated under `/PATH/TO/GLUTEN/package/target/` after the build.
 
-**Suggested next step**:
-Instrument `BlockPayload::serialize` in `cpp/core/shuffle/Payload.cc` with a byte counter on the `outputStream`, log expected vs actual after each `Write` call. Compare to deserialize-side byte counter. That should pin down which `Write` call is silently short.
+### Configurations
 
-Alternative tactical fix: in `cpp/velox/substrait/SubstraitToVeloxPlan.cc`, detect SHJ paths with potentially-nullable join key columns and throw `VELOX_NYI` so gluten's plan-validation layer falls back to vanilla Spark for that operator. Avoids the bug entirely but degrades performance for any join touching nullable keys.
+Common configurations used by Gluten are listed in [Configuration.md](./docs/Configuration.md). Velox specific configurations are listed in [velox-configuration.md](./docs/velox-configuration.md).
 
-### Bug #1 — Velox tzdb parser crashes on full IANA `tzdata.zi`
+The Gluten Velox backend honors some Spark configurations, ignores others, and many are transparent to it. See [velox-spark-configuration.md](./docs/velox-spark-configuration.md) for details, and [velox-parquet-write-configuration.md](./docs/velox-parquet-write-configuration.md) for Parquet write configurations.
 
-**Reproducer**: replace `C:\tools\velox-tzdata\tzdata.zi` with the full IANA tzdata file, run any query with a non-UTC `spark.sql.session.timeZone`.
+## 4. Resources
 
-**What we know**: crash address resolves (via `llvm-symbolizer` against `velox.pdb`) to `facebook::velox::tzdb::time_zone::__create`. Specific Zone record triggering the bad `unique_ptr` not yet identified.
+- [Gluten website](https://gluten.apache.org/)
+- [Velox repository](https://github.com/facebookincubator/velox)
+- [ClickHouse repository](https://github.com/Kyligence/ClickHouse)
+- [Gluten Intro Video at Data AI Summit 2022](https://www.youtube.com/watch?v=0Q6gHT_N-1U)
+- [Gluten Intro Article on Medium](https://medium.com/intel-analytics-software/accelerate-spark-sql-queries-with-gluten-9000b65d1b4e)
+- [Gluten Intro Article on Kyligence.io (Chinese)](https://cn.kyligence.io/blog/gluten-spark/)
+- [Velox Intro from Meta](https://engineering.fb.com/2023/03/09/open-source/velox-open-source-execution-engine/)
 
-**Suggested next step**: bisect the tzdata file (binary chop) to find the minimal failing Zone record, then debug `time_zone::__create` against that specific record.
+## 5. Contribution
 
-### Bug #2 — BHJ proper fix
+Welcome to contribute to the Gluten project! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to make contributions.
 
-**Current state**: works with `spark.gluten.velox.buildHashTableOncePerExecutor.enabled=false` (the prebuilt-table-reuse path is bypassed). The proper fix is to backport the upstream 12-arg `HashJoinNode` constructor (with the trailing prebuilt-table args) into gangpeng's velox snapshot, then restore the dropped args in `SubstraitToVeloxPlan.cc:439`.
+## 6. Community
 
-### Other items in `PORT_STATUS.md`
+Gluten successfully became an Apache Incubator project in March 2024 and graduated as an Apache Top-Level Project in March 2026. Here are several ways to connect with the community.
 
-- Promote ad-hoc PowerShell scripts into proper CMake / Maven targets so the build doesn't depend on `update_jars.ps1` and friends.
-- Re-run upstream gluten unit tests on Windows once `arrow-dataset` JNI is available and `backends-velox/src/test` can be re-enabled.
-- Drop the renamed `src/test.bak` directories once test resolution is fixed in the poms.
-- Replace the unsupported `kAllowInt32NarrowingSession` literal config with the upstream-named constant after velox is merged forward.
+### GitHub
 
----
+Welcome to report issues or start discussions in GitHub. Please search the GitHub issue list before creating a new one to avoid duplication.
 
-## Reference materials
+### Mailing List
 
-- [`PORT_STATUS.md`](PORT_STATUS.md) — exhaustive table of what works / what doesn't / why / how to fix
-- [`tools/windows/SETUP.md`](tools/windows/SETUP.md) — operational build & smoke-test guide
-- `tests/windows/test_*.py` — minimal pyspark reproducers for each major code path
-- `hs_err_pid*.log` files from crashing runs (when present) — resolve crash addresses with `llvm-symbolizer --obj=cpp/build/velox/velox.dll --relative-address <hex>`
+For any technical discussions, please email [dev@gluten.apache.org](mailto:dev@gluten.apache.org). You can browse the [archives](https://lists.apache.org/list.html?dev@gluten.apache.org)
+to view past discussions, or [subscribe to the mailing list](mailto:dev-subscribe@gluten.apache.org) to receive updates.
 
-## License
+### Slack Channel (English)
 
-Apache License 2.0 — same as Apache Gluten and Apache Arrow. See [`LICENSE`](LICENSE).
+Request an invitation to the ASF Slack workspace via [this page](https://github.com/apache/gluten/discussions/8429). Once invited, you can join the **gluten** channel.
+
+The ASF Slack login entry: https://the-asf.slack.com/.
+
+### WeChat Group (Chinese)
+
+Please contact weitingchen at apache.org or zhangzc at apache.org to request an invitation to the WeChat group. It is for Chinese-language communication.
+
+## 7. Performance
+
+[TPC-H](./tools/workload/tpch) is used to evaluate Gluten's performance. Please note that the results below do not reflect the latest performance.
+
+### Velox Backend
+
+The Gluten Velox backend demonstrated an overall speedup of 2.71x, with up to a 14.53x speedup observed in a single query.
+
+![Performance](./docs/image/velox_decision_support_bench1_22queries_performance.png)
+
+<sub>Tested in Jun. 2023. Test environment: single node with 2TB data, using Spark 3.3.2 as the baseline and with Gluten integrated into the same Spark version.</sub>
+
+### ClickHouse Backend
+
+ClickHouse backend demonstrated an average speedup of 2.12x, with up to 3.48x speedup observed in a single query.
+
+![Performance](./docs/image/clickhouse_decision_support_bench1_22queries_performance.png)
+
+<sub>Test environment: a 8-nodes AWS cluster with 1TB data, using Spark 3.1.1 as the baseline and with Gluten integrated into the same Spark version.</sub>
+
+## 8. Qualification Tool
+
+The [Qualification Tool](./tools/qualification-tool/README.md) is a utility to analyze Spark event log files and assess the compatibility and performance of SQL workloads with Gluten. This tool helps users understand how their workloads can benefit from Gluten.
+
+## 9. License
+
+Gluten is licensed under [Apache License Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
+## 10. Acknowledgements
+
+Gluten was initiated by Intel and Kyligence in 2022. Several other companies are also actively contributing to its development, including BIGO, Meituan, Alibaba Cloud, NetEase, Baidu, Microsoft, IBM, Google, etc.
+
+<a href="https://github.com/apache/gluten/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=apache/gluten&columns=25" />
+</a>
